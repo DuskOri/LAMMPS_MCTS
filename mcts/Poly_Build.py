@@ -5,14 +5,14 @@ import os
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+try:
+    from .fragment_registry import get_fragment_registry
+except ImportError:
+    from fragment_registry import get_fragment_registry
+
 # 将 MCTS 标签映射为真实的 SMILES 片段。
 # `[1*]` 代表 片段 的左连接位点，`[2*]` 代表 片段 的右连接位点
-SMILES_MAP = {
-    'A': 'O=C1c2ccc([1*])cc2C(=O)N1[2*]',  # Phthalimide
-    "A'": 'O=C1c2cc3C(=O)N([2*])C(=O)c3cc2C(=O)N1[1*]', # Pyromellitic diimide
-    'B': '[1*]c1ccc([2*])cc1',                 # Benzene
-    'C': '[1*]O[2*]',                # ether
-}
+SMILES_MAP = get_fragment_registry().smiles_map()
 
 # 拼接主函数
 def build_poly_chain(fragment_list, dp=10):
@@ -20,8 +20,13 @@ def build_poly_chain(fragment_list, dp=10):
     接受一个 MCTS 序列（如 ['A','B','C','End']），拼接成一条长度为 dp 的聚合物链
     """
     # 过滤掉 End
+    smiles_map = get_fragment_registry().smiles_map()
     real_fragments = [f for f in fragment_list if f != 'End']
     if not real_fragments:
+        return None
+    missing = [fragment for fragment in real_fragments if fragment not in smiles_map]
+    if missing:
+        print(f"ERROR：片段库中没有这些片段: {missing}")
         return None
 
     # 2. 将传入的链段乘以聚合度 DP，即可得到完整的片段列表
@@ -34,17 +39,18 @@ def build_poly_chain(fragment_list, dp=10):
     deicide = AllChem.ReactionFromSmarts('[*:1][2*].[1*][*:2]>>[*:1]-[*:2]')
 
     # 4. 初始化聚合物链，在RDKIT中解析为第一个片段
-    chain_mol = Chem.MolFromSmiles(SMILES_MAP[full_chain[0]])
+    chain_mol = Chem.MolFromSmiles(smiles_map[full_chain[0]])
     if chain_mol is None:
         print(f"ERROR：无法解析起始片段 {full_chain[0]}")
         return None
     
-    print("A 片段解析结果:", Chem.MolToSmiles(chain_mol))
-    print("B 片段解析结果:", Chem.MolToSmiles(Chem.MolFromSmiles(SMILES_MAP['B'])))
+    print(f"{full_chain[0]} 片段解析结果:", Chem.MolToSmiles(chain_mol))
+    if 'B' in smiles_map:
+        print("B 片段解析结果:", Chem.MolToSmiles(Chem.MolFromSmiles(smiles_map['B'])))
 
     # 5. 循环拼接剩下的片段
     for frag_name in full_chain[1:]:
-        next_mol = Chem.MolFromSmiles(SMILES_MAP[frag_name])
+        next_mol = Chem.MolFromSmiles(smiles_map[frag_name])
         
         # 运行反应，这会返回一个产物列表
         products = deicide.RunReactants((chain_mol, next_mol))
@@ -86,12 +92,24 @@ def save_pdb(final_mol, filename="output.pdb"):
         return False
 
     # 生成三维构象
-    AllChem.EmbedMolecule(mol_with_h, AllChem.ETKDGv3())
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 2026
+    conf_id = AllChem.EmbedMolecule(final_mol, params)
+    if conf_id < 0:
+        params.useRandomCoords = True
+        conf_id = AllChem.EmbedMolecule(final_mol, params)
+    if conf_id < 0:
+        print(f"ERROR 无法生成三维构象: {filename}")
+        return False
+
     # 简单的力场优化，防止原子过度重叠
-    AllChem.UFFOptimizeMolecule(mol_with_h, maxIters=200)
+    try:
+        AllChem.UFFOptimizeMolecule(final_mol, confId=conf_id, maxIters=200)
+    except ValueError:
+        print(f"WARNING UFF优化失败，直接保存未优化构象: {filename}")
     
     # 保存为 PDB 文件
-    Chem.MolToPDBFile(mol_with_h, filename)
+    Chem.MolToPDBFile(final_mol, filename)
     print(f"CORRECT 聚合物链已成功生成并保存为: {filename}")
     return True
 

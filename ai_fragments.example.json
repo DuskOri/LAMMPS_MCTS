@@ -1,0 +1,16 @@
+{
+  "fragments": [
+    {
+      "key": "AI_TEST_FLEX",
+      "smiles": "[1*]CCOCC[2*]",
+      "family": "ai_custom",
+      "label": "AI test flexible ether",
+      "group": "soft_segment",
+      "roles": ["flexible", "ether"],
+      "notes": "Example AI-generated fragment for interface testing."
+    }
+  ],
+  "transitions": {
+    "AI_TEST_FLEX": ["AI_TEST_FLEX", "End"]
+  }
+}

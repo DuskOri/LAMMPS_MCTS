@@ -1,0 +1,3 @@
+low_k_rank,input_path,flux_path,temp_path,heat_flux,temperature_gradient,conductivity_w_mk,success,message
+1,outputs\lammps\candidate_001_fast_tc.in,outputs\lammps\candidate_001_flux.profile,outputs\lammps\candidate_001_temp.profile,0.0,0.0,0.0,False,[Errno 2] No such file or directory: 'outputs\\lammps\\candidate_001_flux.profile'
+2,outputs\lammps\candidate_002_fast_tc.in,outputs\lammps\candidate_002_flux.profile,outputs\lammps\candidate_002_temp.profile,0.0,0.0,0.0,False,[Errno 2] No such file or directory: 'outputs\\lammps\\candidate_002_flux.profile'

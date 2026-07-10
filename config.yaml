@@ -1,0 +1,72 @@
+mcts:
+  iterations: 300
+  max_steps: 6
+  start_fragment: Start
+  top_k: 5
+  exploration_weight: 1.41421356237
+  rollout_limit: 32
+  random_seed: 7
+  feedback_mode: heuristic
+  feedback_max_evaluations: 10
+  feedback_output_dir: outputs/mcts_feedback
+  feedback_run_lammps: false
+  feedback_reward_offset: 0.05
+  feedback_fallback_to_heuristic: true
+  feedback_failure_reward: -1.0
+
+chemistry:
+  active_families: polyimide,polyurethane,phenolic
+  custom_fragment_file: custom_fragments.json
+  ai_enabled: false
+  ai_api_url: https://api.openai.com/v1/chat/completions
+  ai_api_key_env: OPENAI_API_KEY
+  ai_model: gpt-4.1-mini
+  ai_output_file: ai_fragments.json
+  ai_refresh: false
+  ai_temperature: 0.2
+  ai_max_fragments: 8
+  ai_timeout_seconds: 60
+  ai_validate_rdkit: true
+  ai_prompt: Generate low thermal conductivity polymer fragments for MCTS screening.
+  allow_custom_self_transitions: true
+
+polymer:
+  degree_of_polymerization: 10
+  build_pdb: true
+
+system:
+  prepare_initial_system: true
+  molecule_count: 10
+  box_size: 60.0
+  tolerance: 2.0
+  packmol_executable: C:/DuskORI/Application/miniconda/envs/polymer_mcts/Scripts/packmol.exe
+
+thermal_conductivity:
+  write_fast_input: true
+  temperature: 300.0
+  hot_temperature: 450.0
+  cold_temperature: 150.0
+  timestep: 0.5
+  tdamp: 50.0
+  cutoff: 12.0
+  equil_steps: 5000
+  gradient_steps: 20000
+  dump_every: 5000
+  analyze_outputs: true
+  trim_fraction: 0.20
+
+lammps:
+  run_enabled: false
+  executable: C:/DuskORI/Application/LAMMPS/bin/lmp.exe
+  timeout_seconds: 120
+
+output:
+  directory: outputs
+  candidates_csv: candidates.csv
+  build_results_csv: build_results.csv
+  system_results_csv: system_results.csv
+  thermal_inputs_csv: thermal_inputs.csv
+  lammps_runs_csv: lammps_runs.csv
+  thermal_results_csv: thermal_results.csv
+  low_k_database_csv: low_k_database.csv
+  feedback_records_csv: feedback_records.csv

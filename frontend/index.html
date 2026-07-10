@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAMMPS_MCTS</title>
+  <link rel="stylesheet" href="styles.css?v=20260708e">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <img class="brand-mark" src="assets/brand-mark.svg" alt="LAMMPS_MCTS">
+        <div>
+          <h1>LAMMPS_MCTS</h1>
+          <p>聚合物低热导筛选</p>
+        </div>
+      </div>
+      <nav class="main-nav" aria-label="主导航">
+        <span class="nav-group">首页</span>
+        <button class="nav-button active" data-tab="run" type="button">运行</button>
+        <span class="nav-group">配置</span>
+        <button class="nav-button" data-tab="graph" type="button">有向图</button>
+        <span class="nav-group">结果</span>
+        <button class="nav-button" data-tab="database" type="button">数据库</button>
+        <span class="nav-group">帮助</span>
+        <button class="nav-button" data-tab="guide" type="button">说明</button>
+      </nav>
+    </header>
+
+    <main class="main">
+      <section id="run" class="tab-panel active">
+        <div class="hero-panel">
+          <div class="hero-copy">
+            <span class="panel-tag">本地控制台</span>
+            <h2>LAMMPS_MCTS 聚合物热导筛选</h2>
+            <p>选择片段空间，设置 DP 和 MCTS 迭代次数，然后启动搜索。页面会显示当前阶段，运行结束后刷新低热导候选数据库。</p>
+            <div class="workflow-strip">
+              <span><img src="assets/icon-graph.svg" alt="">片段图</span>
+              <span><img src="assets/icon-search.svg" alt="">低热导搜索</span>
+              <span><img src="assets/icon-database.svg" alt="">结果库</span>
+            </div>
+          </div>
+          <div class="hero-side">
+            <img src="assets/polymer-workflow.svg" alt="polymer workflow">
+            <button id="runNowBtn" class="primary-action" type="button">一键运行</button>
+          </div>
+        </div>
+
+        <div class="layout-grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <img src="assets/icon-graph.svg" alt="">
+              <h3>基础参数</h3>
+            </div>
+            <div class="form-grid">
+              <label>
+                聚合度 DP
+                <input id="dpInput" type="number" min="1" max="100" value="10">
+              </label>
+              <label>
+                MCTS 迭代次数
+                <input id="iterationsInput" type="number" min="1" value="300">
+              </label>
+              <label>
+                输出候选数
+                <input id="topKInput" type="number" min="1" value="5">
+              </label>
+              <label>
+                最大片段步数
+                <input id="maxStepsInput" type="number" min="2" value="6">
+              </label>
+            </div>
+
+            <label class="wide-field">
+              选择已有有向图/片段空间
+              <select id="graphPresetSelect">
+                <option value="polyimide,polyurethane,phenolic">全部内置</option>
+                <option value="polyimide">聚酰亚胺</option>
+                <option value="polyurethane">聚氨酯</option>
+                <option value="phenolic">酚醛树脂</option>
+                <option value="custom">自定义片段</option>
+              </select>
+            </label>
+
+            <div class="check-line">
+              <label>
+                <input id="runLammpsInput" type="checkbox">
+                自动运行 LAMMPS
+              </label>
+              <label>
+                <input id="thermalFeedbackInput" type="checkbox">
+                热导结果反馈 MCTS
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="saveConfigBtn" type="button">保存参数</button>
+              <button id="reloadConfigBtn" type="button">重新读取</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <img src="assets/icon-search.svg" alt="">
+              <h3>当前阶段</h3>
+            </div>
+            <div class="status-box">
+              <strong id="statusTitle">等待运行</strong>
+              <span id="statusMessage">设置参数后点击一键运行。</span>
+            </div>
+            <ol class="stage-list" id="stageList">
+              <li data-stage="search">MCTS 搜索</li>
+              <li data-stage="build">RDKit 建链</li>
+              <li data-stage="packmol">Packmol 初始体系</li>
+              <li data-stage="write_lammps">写出 LAMMPS 输入</li>
+              <li data-stage="run_lammps">运行 LAMMPS</li>
+              <li data-stage="analyze">热导率后处理</li>
+              <li data-stage="save">保存数据库</li>
+            </ol>
+          </section>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric"><span>候选序列</span><strong id="candidateCount">0</strong></article>
+          <article class="metric"><span>建链结果</span><strong id="buildCount">0</strong></article>
+          <article class="metric"><span>LAMMPS 输入</span><strong id="inputCount">0</strong></article>
+          <article class="metric"><span>最低热导率</span><strong id="bestKappa">--</strong></article>
+        </div>
+
+        <section class="panel">
+          <div class="table-title">
+            <div class="panel-heading compact-heading">
+              <img src="assets/icon-database.svg" alt="">
+              <h3>低热导数据库</h3>
+            </div>
+            <button id="refreshResultsBtn" type="button">刷新结果</button>
+          </div>
+          <div class="table-wrap">
+            <table id="lowKTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </section>
+      </section>
+
+      <section id="graph" class="tab-panel">
+        <div class="layout-grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <img src="assets/icon-graph.svg" alt="">
+              <h3>创建新的有向图</h3>
+            </div>
+            <p class="muted">每个片段需要一个 key 和一个带 <code>[1*]</code>、<code>[2*]</code> 的 SMILES。</p>
+            <div class="form-grid">
+              <label>片段 key<input id="graphNodeKey" placeholder="CUSTOM_AR"></label>
+              <label>SMILES<input id="graphNodeSmiles" placeholder="[1*]c1ccc([2*])cc1"></label>
+              <label>family<input id="graphNodeFamily" value="custom"></label>
+              <label>roles<input id="graphNodeRoles" placeholder="rigid,aromatic"></label>
+            </div>
+            <div class="button-row">
+              <button id="addGraphNodeBtn" type="button">加入片段</button>
+              <button id="loadGraphExampleBtn" type="button">载入示例</button>
+              <button id="clearGraphBtn" type="button">清空草稿</button>
+            </div>
+
+            <div class="form-grid">
+              <label>起点<input id="edgeSource" placeholder="CUSTOM_AR"></label>
+              <label>终点<input id="edgeTarget" placeholder="CUSTOM_FLEX 或 End"></label>
+            </div>
+            <div class="button-row">
+              <button id="addEdgeBtn" type="button">加入有向边</button>
+              <button id="addEndEdgeBtn" type="button">允许结束</button>
+              <button id="saveGraphBtn" type="button">保存为自定义图</button>
+            </div>
+            <div class="graph-preview-card">
+              <div class="graph-preview-head">
+                <strong>图形预览</strong>
+                <span>箭头表示 MCTS 可以选择的下一步片段</span>
+              </div>
+              <svg id="graphPreviewSvg" class="graph-preview-svg" viewBox="0 0 420 300" role="img" aria-label="自定义有向图预览"></svg>
+              <div id="graphEdgeList" class="edge-list"></div>
+            </div>
+            <details class="json-details">
+              <summary>查看 JSON 配置</summary>
+              <pre id="graphEditorOutput"></pre>
+            </details>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <img src="assets/icon-search.svg" alt="">
+              <h3>API 生成片段配置</h3>
+            </div>
+            <p class="muted">API key 只留在当前浏览器页面，不写入项目文件。</p>
+            <div class="form-grid">
+              <label>API URL<input id="apiUrlInput" value="https://api.openai.com/v1/chat/completions"></label>
+              <label>Model<input id="apiModelInput" value="gpt-4.1-mini"></label>
+              <label>API Key<input id="apiKeyInput" type="password" placeholder="输入后点击生成"></label>
+              <label>片段数量<input id="apiMaxFragmentsInput" type="number" min="1" max="20" value="8"></label>
+            </div>
+            <label class="wide-field">
+              生成要求
+              <textarea id="apiPromptInput">Generate low thermal conductivity polymer fragments for MCTS screening. Return JSON with fragments and transitions. Each fragment SMILES must contain [1*] and [2*].</textarea>
+            </label>
+            <div class="button-row">
+              <button id="generateByApiBtn" type="button">调用 API 生成</button>
+              <button id="downloadApiJsonBtn" type="button">下载 ai_fragments.json</button>
+            </div>
+            <pre id="apiGeneratorOutput">等待生成...</pre>
+          </section>
+        </div>
+      </section>
+
+      <section id="database" class="tab-panel">
+        <section class="panel">
+          <div class="table-title">
+            <h3>MCTS 候选序列</h3>
+            <input id="candidateFilter" placeholder="筛选片段或序列">
+          </div>
+          <div class="table-wrap">
+            <table id="candidateTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </section>
+
+        <section class="panel spaced">
+          <h3>热导率结果</h3>
+          <div class="table-wrap">
+            <table id="thermalTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </section>
+      </section>
+
+      <section id="guide" class="tab-panel">
+        <div class="layout-grid">
+          <section class="panel">
+            <h3>启动控制台</h3>
+            <pre id="serverCommand"></pre>
+          </section>
+          <section class="panel">
+            <h3>手动运行主流程</h3>
+            <pre id="mainCommand"></pre>
+          </section>
+          <section class="panel">
+            <h3>手动运行 LAMMPS</h3>
+            <pre id="lammpsCommand"></pre>
+          </section>
+          <section class="panel">
+            <h3>使用顺序</h3>
+            <ol class="guide-list">
+              <li>在运行页选择片段空间。</li>
+              <li>设置 DP、迭代次数和候选数量。</li>
+              <li>点击一键运行。</li>
+              <li>等待阶段状态变为完成。</li>
+              <li>在数据库页查看低热导候选。</li>
+            </ol>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js?v=20260708e"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+rank,sequence,score,visits,average_reward,length,count_A,count_A_prime,count_B,count_C,imide_ratio,aromatic_ratio,flexible_ratio,sequence_text
+1,A' B End,0.6024096385542171,48,0.6024096385542171,2,0,1,1,0,0.5,0.5,0.0,A'-B
+2,A B End,0.6024096385542171,48,0.6024096385542171,2,1,0,1,0,0.5,0.5,0.0,A-B
+3,A' B C B End,0.5649717514124294,6,0.5649717514124294,4,0,1,2,1,0.25,0.5,0.25,A'-B-C-B

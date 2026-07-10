@@ -1,0 +1,26 @@
+{
+  "fragments": [
+    {
+      "key": "CUSTOM_AR",
+      "smiles": "[1*]c1ccc([2*])cc1",
+      "family": "custom",
+      "label": "custom aromatic linker",
+      "group": "aromatic",
+      "roles": ["rigid", "aromatic"],
+      "notes": "示例片段。正式使用时替换为自己的双端连接 SMILES。"
+    },
+    {
+      "key": "CUSTOM_FLEX",
+      "smiles": "[1*]OCCO[2*]",
+      "family": "custom",
+      "label": "custom flexible ether",
+      "group": "flexible",
+      "roles": ["flexible", "ether"],
+      "notes": "示例柔性片段。两个虚拟端点分别写成 [1*] 和 [2*]。"
+    }
+  ],
+  "transitions": {
+    "CUSTOM_AR": ["CUSTOM_FLEX", "End"],
+    "CUSTOM_FLEX": ["CUSTOM_AR", "End"]
+  }
+}

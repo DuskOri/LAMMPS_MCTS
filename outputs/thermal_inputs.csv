@@ -1,0 +1,3 @@
+index,data_path,input_path,flux_output,temp_output,dump_output,success,message
+1,outputs\systems\candidate_001_system.data,outputs\lammps\candidate_001_fast_tc.in,outputs\lammps\candidate_001_flux.profile,outputs\lammps\candidate_001_temp.profile,outputs\lammps\candidate_001_dump.lammpstrj,True,ok
+2,outputs\systems\candidate_002_system.data,outputs\lammps\candidate_002_fast_tc.in,outputs\lammps\candidate_002_flux.profile,outputs\lammps\candidate_002_temp.profile,outputs\lammps\candidate_002_dump.lammpstrj,True,ok

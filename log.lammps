@@ -1,0 +1,283 @@
+LAMMPS (22 Jul 2025 - Update 1)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread.
+  using 1 OpenMP thread(s) per MPI task
+Loaded 1 plugins from C:\DuskORI\Application\LAMMPS\plugins
+# 快速热导率计算输入脚本
+# 用于跑通 NEMD 热流和温度梯度统计流程，并忽略分子间非键作用力。
+# 当前模式适合筛选和流程验证，正式计算需要补充完整力场参数。
+
+units           real
+dimension       3
+atom_style      full
+boundary        p p p
+
+variable        T_equil   equal 300.0
+variable        T_hot     equal 450.0
+variable        T_cold    equal 150.0
+variable        dt        equal 0.5
+variable        tdamp     equal 50.0
+variable        rc        equal 12.0
+
+# 当前 data 文件只有拓扑和坐标，没有完整非键/键参数。
+# pair_style zero 用来忽略所有 pair 力；neigh_modify 行保留“忽略分子间作用力”的显式设置。
+pair_style      zero ${rc}
+pair_style      zero 12
+bond_style      harmonic
+
+read_data       outputs/systems/candidate_001_system.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (60 60 60)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  2820 atoms
+  scanning bonds ...
+  3 = max bonds/atom
+  orthogonal box = (0 0 0) to (60 60 60)
+  1 by 1 by 1 MPI processor grid
+  reading bonds ...
+  3210 bonds
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        0        0       
+  special bond factors coul:  0        0        0       
+     3 = max # of 1-2 neighbors
+     6 = max # of 1-3 neighbors
+    14 = max # of 1-4 neighbors
+    16 = max # of special neighbors
+  special bonds CPU = 0.002 seconds
+  read_data CPU = 0.054 seconds
+
+# 将所有 bond type 的力常数置零，使脚本可以在缺少真实力场时快速跑通。
+pair_coeff      * *
+bond_coeff      * 0.0 1.0
+special_bonds   lj/coul 0.0 0.0 0.5
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        0        0.5     
+  special bond factors coul:  0        0        0.5     
+     3 = max # of 1-2 neighbors
+     6 = max # of 1-3 neighbors
+    14 = max # of 1-4 neighbors
+    16 = max # of special neighbors
+  special bonds CPU = 0.002 seconds
+neigh_modify    exclude molecule/inter all
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        ${dt}
+timestep        0.5
+thermo          1000
+thermo_style    custom step temp press vol etotal
+thermo_modify   flush yes
+
+velocity        all create ${T_equil} 87287 dist gaussian
+velocity        all create 300 87287 dist gaussian
+
+# 先做短时间 NVE，让速度场稳定；快速模式不做长时间压缩和退火。
+fix             eq all nve
+run             5000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 14
+  ghost atom cutoff = 14
+  binsize = 7, bins = 9 9 9
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair zero, perpetual
+      attributes: half, newton on
+      pair build: half/bin/newton
+      stencil: half/bin/3d
+      bin: standard
+Per MPI rank memory allocation (min/avg/max) = 7.891 | 7.891 | 7.891 Mbytes
+   Step          Temp          Press          Volume         TotEng    
+         0   300            533.49424      216000         2520.8711    
+      1000   300            533.49424      216000         2520.8711    
+      2000   300            533.49424      216000         2520.8711    
+      3000   300            533.49424      216000         2520.8711    
+      4000   300            533.49424      216000         2520.8711    
+      5000   300            533.49424      216000         2520.8711    
+WARNING: Bond/angle/dihedral extent > half of periodic box length (src/domain.cpp:1174)
+Loop time of 3.55695 on 1 procs for 5000 steps with 2820 atoms
+
+Performance: 60.726 ns/day, 0.395 hours/ns, 1405.699 timesteps/s, 3.964 Matom-step/s
+93.6% CPU use with 1 MPI tasks x 1 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.000914   | 0.000914   | 0.000914   |   0.0 |  0.03
+Bond    | 0.19835    | 0.19835    | 0.19835    |   0.0 |  5.58
+Neigh   | 3.0263     | 3.0263     | 3.0263     |   0.0 | 85.08
+Comm    | 0.13486    | 0.13486    | 0.13486    |   0.0 |  3.79
+Output  | 0.00047    | 0.00047    | 0.00047    |   0.0 |  0.01
+Modify  | 0.13874    | 0.13874    | 0.13874    |   0.0 |  3.90
+Other   |            | 0.05736    |            |       |  1.61
+
+Nlocal:           2820 ave        2820 max        2820 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           4827 ave        4827 max        4827 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          32587 ave       32587 max       32587 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 32587
+Ave neighs/atom = 11.555674
+Ave special neighs/atom = 11.184397
+Neighbor list builds = 172
+Dangerous builds = 0
+unfix           eq
+
+variable        xlo_now equal xlo
+variable        xhi_now equal xhi
+variable        ylo_now equal ylo
+variable        yhi_now equal yhi
+variable        zlo_now equal zlo
+variable        zhi_now equal zhi
+variable        Lx equal v_xhi_now-v_xlo_now
+variable        Ly equal v_yhi_now-v_ylo_now
+variable        Lz equal v_zhi_now-v_zlo_now
+
+variable        fix_thick  equal 0.05*v_Lx
+variable        src_thick  equal 0.1*v_Lx
+variable        flux_thick equal 0.1*v_Lx
+
+variable        bottom_fix_bottom equal v_xlo_now
+variable        bottom_fix_top    equal v_xlo_now+v_fix_thick
+variable        hot_bottom        equal v_bottom_fix_top
+variable        hot_top           equal v_hot_bottom+v_src_thick
+variable        cold_top          equal v_xhi_now-v_fix_thick
+variable        cold_bottom       equal v_cold_top-v_src_thick
+variable        top_fix_bottom    equal v_cold_top
+variable        top_fix_top       equal v_xhi_now
+
+region          bottomfix block v_bottom_fix_bottom v_bottom_fix_top INF INF INF INF
+region          topfix    block v_top_fix_bottom v_top_fix_top INF INF INF INF
+region          hot       block v_hot_bottom v_hot_top INF INF INF INF
+region          cold      block v_cold_bottom v_cold_top INF INF INF INF
+
+group           bottomfix region bottomfix
+114 atoms in group bottomfix
+group           topfix    region topfix
+117 atoms in group topfix
+group           hot       region hot
+219 atoms in group hot
+group           cold      region cold
+255 atoms in group cold
+group           mobile    subtract all bottomfix topfix
+2589 atoms in group mobile
+
+variable        flux_center equal (v_xlo_now+v_xhi_now)/2.0
+variable        flux_bottom equal v_flux_center-v_flux_thick/2.0
+variable        flux_top    equal v_flux_center+v_flux_thick/2.0
+region          flux block v_flux_bottom v_flux_top INF INF INF INF
+group           flux region flux
+343 atoms in group flux
+
+compute         Thot all temp/region hot
+compute         Tcold all temp/region cold
+
+fix             freeze1 bottomfix setforce 0.0 0.0 0.0
+fix             freeze2 topfix setforce 0.0 0.0 0.0
+velocity        bottomfix set 0.0 0.0 0.0
+velocity        topfix set 0.0 0.0 0.0
+
+fix             int mobile nve
+fix             fhot all langevin ${T_hot} ${T_hot} ${tdamp} 699483 tally yes
+fix             fhot all langevin 450 ${T_hot} ${tdamp} 699483 tally yes
+fix             fhot all langevin 450 450 ${tdamp} 699483 tally yes
+fix             fhot all langevin 450 450 50 699483 tally yes
+fix             fcold all langevin ${T_cold} ${T_cold} ${tdamp} 399481 tally yes
+fix             fcold all langevin 150 ${T_cold} ${tdamp} 399481 tally yes
+fix             fcold all langevin 150 150 ${tdamp} 399481 tally yes
+fix             fcold all langevin 150 150 50 399481 tally yes
+fix_modify      fhot temp Thot
+fix_modify      fcold temp Tcold
+
+# 用热源和冷源能量交换的平均值估算输入热流。
+variable        area equal v_Ly*v_Lz
+variable        elapsed_time equal step*v_dt
+variable        Qin equal abs(f_fhot)
+variable        Qout equal abs(f_fcold)
+variable        Jsource equal 0.5*(v_Qin+v_Qout)/(v_area*v_elapsed_time)
+
+compute         myKE flux ke/atom
+compute         myPE flux pe/atom
+compute         myStress flux stress/atom NULL virial
+compute         flux_vector flux heat/flux myKE myPE myStress
+variable        Volume_flux equal v_Ly*v_Lz*v_flux_thick
+variable        Jx equal c_flux_vector[1]/v_Volume_flux
+
+fix             ave_flux all ave/time 10 100 1000 v_Jsource v_Jx file outputs/lammps/candidate_001_flux.profile
+compute         layers all chunk/atom bin/1d x lower 1.0 units box
+fix             ave_temp all ave/chunk 10 100 1000 layers temp norm sample file outputs/lammps/candidate_001_temp.profile
+
+dump            traj all custom 5000 outputs/lammps/candidate_001_dump.lammpstrj id mol type x y z vx vy vz
+thermo_style    custom step temp c_Thot c_Tcold v_Jsource v_Jx f_fhot f_fcold
+WARNING: New thermo_style command, previous thermo_modify settings will be lost (src/output.cpp:912)
+run             20000
+Generated 0 of 6 mixed pair_coeff terms from geometric mixing rule
+WARNING: Inconsistent image flags
+For more information see https://docs.lammps.org/err0027 (src/domain.cpp:1052)
+WARNING: Bond/angle/dihedral extent > half of periodic box length (src/domain.cpp:1174)
+Per MPI rank memory allocation (min/avg/max) = 10.74 | 10.74 | 10.74 Mbytes
+   Step          Temp          c_Thot        c_Tcold       v_Jsource         v_Jx          f_fhot        f_fcold    
+      5000   273.23842      318.26696      331.45793      0              8.8408e-06    -0             -0            
+      6000   269.313        457.56635      155.83363      1.5566793e-05 -1.9905452e-06 -151.48475      184.75798    
+      7000   260.42009      430.0978       144.69476      1.81238e-05    5.114487e-06  -174.3373       282.38245    
+      8000   261.86826      477.59395      159.76401      2.0719428e-05 -1.5491357e-05 -250.40694      346.31258    
+      9000   258.5678       465.59203      168.78987      2.2440072e-05  2.3688782e-05 -301.75089      425.30743    
+     10000   252.72371      421.24852      147.33516      2.4206792e-05  1.5200867e-05 -349.43507      522.00943    
+     11000   254.66806      448.55598      152.72813      2.6526737e-05  8.5250409e-06 -447.08134      603.37744    
+     12000   249.72104      433.10019      154.13416      2.810083e-05   2.1087262e-05 -507.97126      705.9846     
+     13000   249.51258      448.47478      146.69744      2.9403053e-05  2.0469309e-05 -588.19173      787.87113    
+     14000   247.53737      439.17227      153.92295      3.1344391e-05  3.90882e-05   -681.70891      898.04839    
+     15000   244.09099      499.44355      147.71156      3.3692539e-05  2.3691165e-05 -787.06666      1032.3304    
+     16000   242.73548      481.41521      155.61855      3.4308453e-05  2.7231621e-05 -859.74358      1116.4233    
+     17000   242.95019      435.21911      155.95983      3.4657438e-05  6.5684981e-06 -933.02753      1188.0077    
+     18000   240.37573      446.88754      149.66901      3.5445823e-05  1.5759808e-05 -1010.187       1286.7023    
+     19000   237.30411      437.36823      154.13565      3.5605111e-05  2.7718688e-05 -1066.4843      1368.9053    
+     20000   236.9248       489.14535      164.98793      3.6798843e-05  4.2873769e-05 -1171.9312      1477.5856    
+     21000   238.29133      474.07582      163.89567      3.6974957e-05  4.0544951e-05 -1250.6572      1544.6496    
+     22000   236.71044      497.60514      164.77565      3.7440584e-05  3.1154684e-05 -1328.973       1636.3212    
+     23000   229.7734       422.5229       144.68518      3.7752048e-05  2.9875968e-05 -1380.1003      1745.7692    
+     24000   232.80107      441.4959       155.18988      3.8172866e-05  1.0803775e-05 -1478.9314      1819.2042    
+     25000   229.18777      412.58177      151.12859      3.8837314e-05  1.0889886e-06 -1562.4159      1932.9423    
+WARNING: Bond/angle/dihedral extent > half of periodic box length (src/domain.cpp:1174)
+Loop time of 32.0274 on 1 procs for 20000 steps with 2820 atoms
+
+Performance: 26.977 ns/day, 0.890 hours/ns, 624.466 timesteps/s, 1.761 Matom-step/s
+97.2% CPU use with 1 MPI tasks x 1 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.15096    | 0.15096    | 0.15096    |   0.0 |  0.47
+Bond    | 1.5098     | 1.5098     | 1.5098     |   0.0 |  4.71
+Neigh   | 12.06      | 12.06      | 12.06      |   0.0 | 37.65
+Comm    | 0.85971    | 0.85971    | 0.85971    |   0.0 |  2.68
+Output  | 0.063734   | 0.063734   | 0.063734   |   0.0 |  0.20
+Modify  | 17.061     | 17.061     | 17.061     |   0.0 | 53.27
+Other   |            | 0.3222     |            |       |  1.01
+
+Nlocal:           2820 ave        2820 max        2820 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           5921 ave        5921 max        5921 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          21677 ave       21677 max       21677 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 21677
+Ave neighs/atom = 7.6868794
+Ave special neighs/atom = 11.184397
+Neighbor list builds = 696
+Dangerous builds = 0
+
+undump          traj
+unfix           ave_temp
+unfix           ave_flux
+unfix           fhot
+unfix           fcold
+unfix           int
+unfix           freeze1
+unfix           freeze2
+Total wall time: 0:00:35

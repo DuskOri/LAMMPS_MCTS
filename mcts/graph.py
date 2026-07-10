@@ -1,14 +1,13 @@
 # mcts/graph.py
 # 规定链段的连接规则
 
-PolyGRAPH = {
-    'Start': ['A', "A'"],    
-    'A': ['B'],
-    "A'": ['B'],
-    'B': ['A', "A'", 'B', 'C', 'End'],  
-    'C': ['B'],  
-    'End': []                
-}
+try:
+    from .fragment_registry import get_fragment_registry
+except ImportError:
+    from fragment_registry import get_fragment_registry
+
+
+PolyGRAPH = get_fragment_registry().graph()
 
 # 化学逻辑：A代表酸酐，B代表芳环二胺，C代表柔性基团
 # Start为开始节点，End为结束
