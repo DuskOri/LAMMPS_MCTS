@@ -1,216 +1,286 @@
-"""快速热导率计算输入脚本生成模块。"""
+"""生成快速 Green-Kubo 热导率计算输入文件。"""
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 
 @dataclass
 class ThermalConductivityInputResult:
-    """记录一个 LAMMPS 热导率输入脚本的生成结果。"""
+    """记录一个候选体系的 Green-Kubo 输入和输出路径。"""
 
     data_path: str
     input_path: str
-    flux_output: str
-    temp_output: str
+    correlation_output: str
+    conductivity_output: str
     dump_output: str
+    method: str
     success: bool
     message: str = ""
 
-
-def write_fast_tc_input(data_file, input_file, output_prefix, params=None):
-    """生成一个忽略分子间作用力的快速 NEMD 热导率计算脚本。"""
+def write_rapid_gk_input(data_file, input_file, output_prefix, params=None):
+    """生成忽略分子间热流交叉相关项的快速 Green-Kubo 输入。"""
     params = _merge_params(_default_params(), params or {})
+    data_path = Path(data_file)
     input_path = Path(input_file)
-    input_path.parent.mkdir(parents=True, exist_ok=True)
-
     output_prefix = Path(output_prefix)
+    correlation_file = Path(f"{output_prefix}_intra_hfacf.dat")
+    conductivity_file = Path(f"{output_prefix}_kappa.dat")
+    dump_file = Path(f"{output_prefix}_dump.lammpstrj")
+
+    missing = validate_force_field_data(
+        data_path,
+        force_field_include=params.get("force_field_include", ""),
+    )
+    if missing:
+        return ThermalConductivityInputResult(
+            data_path=str(data_path),
+            input_path="",
+            correlation_output="",
+            conductivity_output="",
+            dump_output="",
+            method="rapid_green_kubo",
+            success=False,
+            message=(
+                "LAMMPS data is topology-only; missing force-field sections: "
+                + ", ".join(missing)
+            ),
+        )
+
+    molecule_count = max(int(params.get("molecule_count", 1)), 1)
+    sample_nevery = max(int(params["sample_nevery"]), 1)
+    correlation_samples = max(int(params["correlation_samples"]), 2)
+    correlation_every = sample_nevery * correlation_samples
+    params["sample_nevery"] = sample_nevery
+    params["correlation_samples"] = correlation_samples
+    params["correlation_every"] = correlation_every
+    params["production_steps"] = max(
+        int(params["production_steps"]), correlation_every
+    )
+
+    input_path.parent.mkdir(parents=True, exist_ok=True)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
-
-    flux_file = f"{output_prefix}_flux.profile"
-    temp_file = f"{output_prefix}_temp.profile"
-    dump_file = f"{output_prefix}_dump.lammpstrj"
-
-    script = _render_fast_tc_script(
-        data_file=Path(data_file).as_posix(),
-        flux_file=Path(flux_file).as_posix(),
-        temp_file=Path(temp_file).as_posix(),
-        dump_file=Path(dump_file).as_posix(),
+    script = _render_rapid_gk_script(
+        data_file=data_path.as_posix(),
+        correlation_file=correlation_file.as_posix(),
+        conductivity_file=conductivity_file.as_posix(),
+        dump_file=dump_file.as_posix(),
+        molecule_count=molecule_count,
         params=params,
     )
     input_path.write_text(script, encoding="utf-8")
 
     return ThermalConductivityInputResult(
-        data_path=str(data_file),
+        data_path=str(data_path),
         input_path=str(input_path),
-        flux_output=str(flux_file),
-        temp_output=str(temp_file),
+        correlation_output=str(correlation_file),
+        conductivity_output=str(conductivity_file),
         dump_output=str(dump_file),
+        method="rapid_green_kubo",
         success=True,
         message="ok",
     )
 
 
+def write_fast_tc_input(data_file, input_file, output_prefix, params=None):
+    """保留旧函数名，实际生成快速 Green-Kubo 输入。"""
+    return write_rapid_gk_input(data_file, input_file, output_prefix, params=params)
+
+
+def validate_force_field_data(data_file, force_field_include=""):
+    """确认 data 或额外 include 中存在运行 MD 所需的力场系数。"""
+    data_path = Path(data_file)
+    if not data_path.exists():
+        return ["data file"]
+
+    if force_field_include:
+        include_path = Path(force_field_include)
+        if include_path.exists():
+            return []
+        return ["force-field include file"]
+
+    text = data_path.read_text(encoding="utf-8", errors="ignore")
+    required = []
+    if _type_count(text, "atom") > 0 and not _has_any_section(
+        text, ("Pair Coeffs", "PairIJ Coeffs")
+    ):
+        required.append("Pair Coeffs")
+    for type_name, section in (
+        ("bond", "Bond Coeffs"),
+        ("angle", "Angle Coeffs"),
+        ("dihedral", "Dihedral Coeffs"),
+        ("improper", "Improper Coeffs"),
+    ):
+        if _type_count(text, type_name) > 0 and not _has_any_section(text, (section,)):
+            required.append(section)
+    return required
+
+
+def _type_count(text, type_name):
+    pattern = rf"^\s*(\d+)\s+{re.escape(type_name)}\s+types\s*$"
+    match = re.search(pattern, text, flags=re.MULTILINE | re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def _has_any_section(text, names):
+    return any(
+        re.search(rf"^\s*{re.escape(name)}\s*$", text, flags=re.MULTILINE)
+        for name in names
+    )
+
+
 def _default_params():
-    """默认参数偏向快速跑通流程，不追求收敛精度。"""
+    """快速筛选默认值；正式复核时应延长平衡和采样时间。"""
     return {
         "temperature": 300.0,
-        "hot_temperature": 450.0,
-        "cold_temperature": 150.0,
+        "pressure": 1.0,
         "timestep": 0.5,
         "tdamp": 50.0,
+        "pdamp": 500.0,
         "cutoff": 12.0,
-        "fix_fraction": 0.05,
-        "source_fraction": 0.10,
-        "flux_fraction": 0.10,
-        "equil_steps": 5000,
-        "gradient_steps": 20000,
+        "nvt_steps": 10000,
+        "npt_steps": 50000,
+        "production_steps": 100000,
         "sample_nevery": 10,
-        "sample_nrepeat": 100,
-        "sample_nfreq": 1000,
-        "temp_bin_width": 1.0,
+        "correlation_samples": 1000,
         "thermo_every": 1000,
-        "dump_every": 5000,
+        "dump_every": 10000,
         "random_seed": 87287,
-        "langevin_hot_seed": 699483,
-        "langevin_cold_seed": 399481,
+        "pair_style": "lj/cut/coul/long 12.0",
+        "bond_style": "harmonic",
+        "angle_style": "harmonic",
+        "dihedral_style": "harmonic",
+        "improper_style": "cvff",
+        "kspace_style": "pppm 1.0e-4",
+        "special_bonds": "amber",
+        "force_field_include": "",
+        "molecule_count": 1,
     }
 
 
 def _merge_params(default_params, user_params):
-    """合并配置参数，保留默认值作为兜底。"""
     merged = dict(default_params)
     merged.update(user_params)
     return merged
 
 
-def _render_fast_tc_script(data_file, flux_file, temp_file, dump_file, params):
-    """按示例脚本的思路渲染快速热导率计算输入文件。"""
-    return f"""# 快速热导率计算输入脚本
-# 用于跑通 NEMD 热流和温度梯度统计流程，并忽略分子间非键作用力。
-# 当前模式适合筛选和流程验证，正式计算需要补充完整力场参数。
+def _style_line(keyword, value):
+    value = str(value or "").strip()
+    return f"{keyword:<16}{value}" if value and value.lower() != "none" else ""
 
+
+def _render_rapid_gk_script(
+    data_file,
+    correlation_file,
+    conductivity_file,
+    dump_file,
+    molecule_count,
+    params,
+):
+    """渲染按分子求和的热流自相关计算脚本。"""
+    style_lines = [
+        _style_line("pair_style", params["pair_style"]),
+        _style_line("bond_style", params["bond_style"]),
+        _style_line("angle_style", params["angle_style"]),
+        _style_line("dihedral_style", params["dihedral_style"]),
+        _style_line("improper_style", params["improper_style"]),
+    ]
+    style_block = "\n".join(line for line in style_lines if line)
+    include_value = params.get("force_field_include", "")
+    include_file = "" if include_value is None else str(include_value).strip()
+    include_line = f"include         {Path(include_file).as_posix()}" if include_file else ""
+    kspace_line = _style_line("kspace_style", params.get("kspace_style", ""))
+    special_line = _style_line("special_bonds", params.get("special_bonds", ""))
+
+    molecule_blocks = []
+    heat_flux_values = []
+    for molecule_id in range(1, molecule_count + 1):
+        molecule_blocks.extend(
+            [
+                f"group           mol_{molecule_id} molecule {molecule_id}",
+                f"compute         ke_{molecule_id} mol_{molecule_id} ke/atom",
+                f"compute         pe_{molecule_id} mol_{molecule_id} pe/atom",
+                f"compute         stress_{molecule_id} mol_{molecule_id} stress/atom NULL virial",
+                (
+                    f"compute         flux_{molecule_id} mol_{molecule_id} heat/flux "
+                    f"ke_{molecule_id} pe_{molecule_id} stress_{molecule_id}"
+                ),
+            ]
+        )
+        heat_flux_values.extend(
+            f"c_flux_{molecule_id}[{axis}]" for axis in (1, 2, 3)
+        )
+
+    molecule_block = "\n".join(molecule_blocks)
+    correlation_values = " ".join(heat_flux_values)
+    first_column = 3
+    last_column = first_column + len(heat_flux_values) - 1
+    trap_sum = "+".join(f"trap(f_HFACF[{column}])" for column in range(first_column, last_column + 1))
+
+    return f"""# 快速 Green-Kubo 热导率计算
+# 分子间作用力保留，只在热流相关函数中省略不同分子之间的交叉项。
 units           real
 dimension       3
 atom_style      full
 boundary        p p p
 
-variable        T_equil   equal {params["temperature"]}
-variable        T_hot     equal {params["hot_temperature"]}
-variable        T_cold    equal {params["cold_temperature"]}
-variable        dt        equal {params["timestep"]}
-variable        tdamp     equal {params["tdamp"]}
-variable        rc        equal {params["cutoff"]}
+variable        T equal {params["temperature"]}
+variable        P equal {params["pressure"]}
+variable        dt equal {params["timestep"]}
+variable        tdamp equal {params["tdamp"]}
+variable        pdamp equal {params["pdamp"]}
+variable        s equal {params["sample_nevery"]}
+variable        p equal {params["correlation_samples"]}
+variable        d equal {params["correlation_every"]}
 
-# 当前 data 文件只有拓扑和坐标，没有完整非键/键参数。
-# pair_style zero 用来忽略所有 pair 力；neigh_modify 行保留“忽略分子间作用力”的显式设置。
-pair_style      zero ${{rc}}
-bond_style      harmonic
-
+{style_block}
 read_data       {data_file}
-
-# 将所有 bond type 的力常数置零，使脚本可以在缺少真实力场时快速跑通。
-pair_coeff      * *
-bond_coeff      * 0.0 1.0
-special_bonds   lj/coul 0.0 0.0 0.5
-neigh_modify    exclude molecule/inter all
+{include_line}
+{special_line}
+{kspace_line}
 
 neighbor        2.0 bin
 neigh_modify    every 1 delay 0 check yes
-
 timestep        ${{dt}}
 thermo          {params["thermo_every"]}
-thermo_style    custom step temp press vol etotal
+thermo_style    custom step temp press density vol pe ke etotal
 thermo_modify   flush yes
 
-velocity        all create ${{T_equil}} {params["random_seed"]} dist gaussian
+minimize        1.0e-4 1.0e-6 500 5000
+velocity        all create ${{T}} {params["random_seed"]} mom yes rot yes dist gaussian
 
-# 先做短时间 NVE，让速度场稳定；快速模式不做长时间压缩和退火。
-fix             eq all nve
-run             {params["equil_steps"]}
-unfix           eq
+fix             eq_nvt all nvt temp ${{T}} ${{T}} ${{tdamp}}
+run             {params["nvt_steps"]}
+unfix           eq_nvt
 
-variable        xlo_now equal xlo
-variable        xhi_now equal xhi
-variable        ylo_now equal ylo
-variable        yhi_now equal yhi
-variable        zlo_now equal zlo
-variable        zhi_now equal zhi
-variable        Lx equal v_xhi_now-v_xlo_now
-variable        Ly equal v_yhi_now-v_ylo_now
-variable        Lz equal v_zhi_now-v_zlo_now
+fix             eq_npt all npt temp ${{T}} ${{T}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
+run             {params["npt_steps"]}
+unfix           eq_npt
+reset_timestep  0
 
-variable        fix_thick  equal {params["fix_fraction"]}*v_Lx
-variable        src_thick  equal {params["source_fraction"]}*v_Lx
-variable        flux_thick equal {params["flux_fraction"]}*v_Lx
+{molecule_block}
 
-variable        bottom_fix_bottom equal v_xlo_now
-variable        bottom_fix_top    equal v_xlo_now+v_fix_thick
-variable        hot_bottom        equal v_bottom_fix_top
-variable        hot_top           equal v_hot_bottom+v_src_thick
-variable        cold_top          equal v_xhi_now-v_fix_thick
-variable        cold_bottom       equal v_cold_top-v_src_thick
-variable        top_fix_bottom    equal v_cold_top
-variable        top_fix_top       equal v_xhi_now
+# type auto 只保留每个分子三个热流分量各自的自相关，不生成分子间交叉相关。
+fix             HFACF all ave/correlate ${{s}} ${{p}} ${{d}} {correlation_values} type auto file {correlation_file} ave running
 
-region          bottomfix block v_bottom_fix_bottom v_bottom_fix_top INF INF INF INF
-region          topfix    block v_top_fix_bottom v_top_fix_top INF INF INF INF
-region          hot       block v_hot_bottom v_hot_top INF INF INF INF
-region          cold      block v_cold_bottom v_cold_top INF INF INF INF
+# real 单位转换：kcal/(mol*Angstrom*fs) -> W/m，并除以 kB*T^2*V。
+variable        kB equal 1.380649e-23
+variable        kcal2J equal 4184.0/6.02214076e23
+variable        A2m equal 1.0e-10
+variable        fs2s equal 1.0e-15
+variable        convert equal v_kcal2J*v_kcal2J/v_fs2s/v_A2m
+variable        scale equal v_convert/v_kB/${{T}}/${{T}}/vol*${{s}}*${{dt}}
+variable        kappa equal ({trap_sum})*v_scale/3.0
 
-group           bottomfix region bottomfix
-group           topfix    region topfix
-group           hot       region hot
-group           cold      region cold
-group           mobile    subtract all bottomfix topfix
+fix             kappa_out all ave/time ${{d}} 1 ${{d}} v_kappa file {conductivity_file}
+fix             production all nve
+dump            trajectory all custom {params["dump_every"]} {dump_file} id mol type q x y z vx vy vz
+thermo_style    custom step temp press density etotal v_kappa
+thermo_modify   flush yes
+run             {params["production_steps"]}
 
-variable        flux_center equal (v_xlo_now+v_xhi_now)/2.0
-variable        flux_bottom equal v_flux_center-v_flux_thick/2.0
-variable        flux_top    equal v_flux_center+v_flux_thick/2.0
-region          flux block v_flux_bottom v_flux_top INF INF INF INF
-group           flux region flux
-
-compute         Thot all temp/region hot
-compute         Tcold all temp/region cold
-
-fix             freeze1 bottomfix setforce 0.0 0.0 0.0
-fix             freeze2 topfix setforce 0.0 0.0 0.0
-velocity        bottomfix set 0.0 0.0 0.0
-velocity        topfix set 0.0 0.0 0.0
-
-fix             int mobile nve
-fix             fhot all langevin ${{T_hot}} ${{T_hot}} ${{tdamp}} {params["langevin_hot_seed"]} tally yes
-fix             fcold all langevin ${{T_cold}} ${{T_cold}} ${{tdamp}} {params["langevin_cold_seed"]} tally yes
-fix_modify      fhot temp Thot
-fix_modify      fcold temp Tcold
-
-# 用热源和冷源能量交换的平均值估算输入热流。
-variable        area equal v_Ly*v_Lz
-variable        elapsed_time equal step*v_dt
-variable        Qin equal abs(f_fhot)
-variable        Qout equal abs(f_fcold)
-variable        Jsource equal 0.5*(v_Qin+v_Qout)/(v_area*v_elapsed_time)
-
-compute         myKE flux ke/atom
-compute         myPE flux pe/atom
-compute         myStress flux stress/atom NULL virial
-compute         flux_vector flux heat/flux myKE myPE myStress
-variable        Volume_flux equal v_Ly*v_Lz*v_flux_thick
-variable        Jx equal c_flux_vector[1]/v_Volume_flux
-
-fix             ave_flux all ave/time {params["sample_nevery"]} {params["sample_nrepeat"]} {params["sample_nfreq"]} v_Jsource v_Jx file {flux_file}
-compute         layers all chunk/atom bin/1d x lower {params["temp_bin_width"]} units box
-fix             ave_temp all ave/chunk {params["sample_nevery"]} {params["sample_nrepeat"]} {params["sample_nfreq"]} layers temp norm sample file {temp_file}
-
-dump            traj all custom {params["dump_every"]} {dump_file} id mol type x y z vx vy vz
-thermo_style    custom step temp c_Thot c_Tcold v_Jsource v_Jx f_fhot f_fcold
-run             {params["gradient_steps"]}
-
-undump          traj
-unfix           ave_temp
-unfix           ave_flux
-unfix           fhot
-unfix           fcold
-unfix           int
-unfix           freeze1
-unfix           freeze2
+undump          trajectory
+unfix           production
+unfix           kappa_out
+unfix           HFACF
 """

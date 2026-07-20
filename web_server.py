@@ -15,6 +15,7 @@
 import csv
 import json
 import os
+import shutil
 import threading
 import time
 from http import HTTPStatus
@@ -29,6 +30,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
 PORT = 8010
 
+THERMAL_PROFILES = {
+    "quick": {
+        "system": {"molecule_count": 4, "box_size": 45.0},
+        "thermal_conductivity": {
+            "nvt_steps": 2000,
+            "npt_steps": 8000,
+            "production_steps": 30000,
+            "sample_nevery": 10,
+            "correlation_samples": 300,
+            "thermo_every": 500,
+            "dump_every": 5000,
+        },
+        "lammps": {"timeout_seconds": 1800},
+    },
+    "standard": {
+        "system": {"molecule_count": 10, "box_size": 60.0},
+        "thermal_conductivity": {
+            "nvt_steps": 10000,
+            "npt_steps": 50000,
+            "production_steps": 100000,
+            "sample_nevery": 10,
+            "correlation_samples": 1000,
+            "thermo_every": 1000,
+            "dump_every": 10000,
+        },
+        "lammps": {"timeout_seconds": 7200},
+    },
+}
+
 RUN_LOCK = threading.Lock()
 RUN_STATE = {
     "running": False,
@@ -38,16 +68,23 @@ RUN_STATE = {
     "finished_at": "",
     "error": "",
     "log": [],
+    "iteration": 0,
+    "total_iterations": 0,
+    "evaluation_count": 0,
+    "top_k": 5,
+    "live_candidates": [],
 }
 
 STAGE_LABELS = {
     "idle": "等待运行",
     "search": "MCTS 搜索",
+    "mcts_lammps": "MCTS 热导反馈",
     "build": "RDKit 建链",
     "packmol": "Packmol 初始体系",
     "write_lammps": "写出 LAMMPS 输入",
-    "run_lammps": "运行 LAMMPS",
-    "analyze": "热导率后处理",
+    "export_build": "导出 Top K 结构",
+    "export_packmol": "导出 Top K 体系",
+    "export_lammps": "导出 Top K 输入",
     "save": "保存结果",
     "done": "完成",
     "failed": "失败",
@@ -93,22 +130,29 @@ class LammpsMctsHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        payload = self._read_json_body()
-        if path == "/api/config":
-            config = update_config(payload)
-            self._send_json({"ok": True, "config": public_config_view(config)})
-            return
-        if path == "/api/custom-graph":
-            saved = save_custom_graph(payload)
-            self._send_json({"ok": True, "path": str(saved)})
-            return
-        if path == "/api/run":
-            if payload:
-                update_config(payload)
-            started = start_background_run()
-            self._send_json({"ok": started, "status": RUN_STATE})
-            return
-        self.send_error(HTTPStatus.NOT_FOUND, "API endpoint not found")
+        try:
+            payload = self._read_json_body()
+            if path == "/api/config":
+                config = update_config(payload)
+                self._send_json({"ok": True, "config": public_config_view(config)})
+                return
+            if path == "/api/custom-graph":
+                saved = save_custom_graph(payload)
+                self._send_json({"ok": True, "path": str(saved)})
+                return
+            if path == "/api/run":
+                if payload:
+                    update_config(payload)
+                started = start_background_run()
+                self._send_json({"ok": started, "status": RUN_STATE})
+                return
+            if path == "/api/clear-data":
+                result = clear_output_data(payload)
+                self._send_json({"ok": True, **result, "counts": collect_counts()})
+                return
+            self.send_error(HTTPStatus.NOT_FOUND, "API endpoint not found")
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)})
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -137,15 +181,24 @@ def public_config_view(config):
     mcts_config = config.get("mcts", {})
     polymer_config = config.get("polymer", {})
     chemistry_config = config.get("chemistry", {})
+    tc_config = config.get("thermal_conductivity", {})
     lammps_config = config.get("lammps", {})
     return {
         "iterations": int(mcts_config.get("iterations", 300)),
-        "max_steps": int(mcts_config.get("max_steps", 6)),
+        "max_steps": int(mcts_config.get("max_steps", 5)),
         "top_k": int(mcts_config.get("top_k", 5)),
-        "dp": int(polymer_config.get("degree_of_polymerization", 10)),
-        "active_families": str(chemistry_config.get("active_families", "polyimide,polyurethane,phenolic")),
-        "run_lammps": bool(lammps_config.get("run_enabled", False)),
+        "exploration_weight": float(mcts_config.get("exploration_weight", 1.41421356237)),
+        "target_length_angstrom": float(
+            polymer_config.get("target_chain_length_angstrom", 120.0)
+        ),
+        "active_families": str(chemistry_config.get("active_families", "polyimide")),
+        "run_lammps": bool(mcts_config.get("feedback_run_lammps", False)),
         "feedback_mode": str(mcts_config.get("feedback_mode", "heuristic")),
+        "feedback_run_lammps": bool(mcts_config.get("feedback_run_lammps", False)),
+        "feedback_every_iteration": bool(mcts_config.get("feedback_every_iteration", True)),
+        "feedback_max_evaluations": int(mcts_config.get("feedback_max_evaluations", 0) or 0),
+        "gk_profile": str(tc_config.get("profile", "quick")),
+        "timeout_seconds": int(lammps_config.get("timeout_seconds", 1800) or 0),
     }
 
 
@@ -155,25 +208,56 @@ def update_config(payload):
     mcts_config = config.setdefault("mcts", {})
     polymer_config = config.setdefault("polymer", {})
     chemistry_config = config.setdefault("chemistry", {})
+    tc_config = config.setdefault("thermal_conductivity", {})
     lammps_config = config.setdefault("lammps", {})
 
     if "iterations" in payload:
         mcts_config["iterations"] = int(payload["iterations"])
+    if "exploration_weight" in payload:
+        mcts_config["exploration_weight"] = float(payload["exploration_weight"])
     if "max_steps" in payload:
         mcts_config["max_steps"] = int(payload["max_steps"])
     if "top_k" in payload:
         mcts_config["top_k"] = int(payload["top_k"])
-    if "dp" in payload:
-        polymer_config["degree_of_polymerization"] = int(payload["dp"])
+    if "target_length_angstrom" in payload:
+        polymer_config["target_chain_length_angstrom"] = float(
+            payload["target_length_angstrom"]
+        )
     if "active_families" in payload:
         chemistry_config["active_families"] = str(payload["active_families"])
-    if "run_lammps" in payload:
-        lammps_config["run_enabled"] = bool(payload["run_lammps"])
     if "feedback_mode" in payload:
         mcts_config["feedback_mode"] = str(payload["feedback_mode"])
+    if "feedback_run_lammps" in payload:
+        mcts_config["feedback_run_lammps"] = bool(payload["feedback_run_lammps"])
+    if "feedback_every_iteration" in payload:
+        mcts_config["feedback_every_iteration"] = bool(payload["feedback_every_iteration"])
+    if "feedback_max_evaluations" in payload:
+        mcts_config["feedback_max_evaluations"] = int(payload["feedback_max_evaluations"])
+    if "gk_profile" in payload:
+        apply_thermal_profile(config, str(payload["gk_profile"]))
+    if "timeout_seconds" in payload:
+        lammps_config["timeout_seconds"] = max(0, int(payload["timeout_seconds"]))
+
+    if mcts_config.get("feedback_mode") == "thermal":
+        mcts_config["feedback_every_iteration"] = True
+        mcts_config["feedback_max_evaluations"] = max(
+            int(mcts_config.get("feedback_max_evaluations", 0) or 0),
+            int(mcts_config.get("iterations", 0) or 0),
+        )
+        if "run_lammps" in payload:
+            mcts_config["feedback_run_lammps"] = bool(payload["run_lammps"])
 
     write_config(config, PROJECT_ROOT / "config.yaml")
     return config
+
+
+def apply_thermal_profile(config, profile_name):
+    """应用快速筛选或标准复核参数。"""
+    name = profile_name if profile_name in THERMAL_PROFILES else "quick"
+    profile = THERMAL_PROFILES[name]
+    for section, values in profile.items():
+        config.setdefault(section, {}).update(values)
+    config.setdefault("thermal_conductivity", {})["profile"] = name
 
 
 def write_config(config, filename):
@@ -190,6 +274,8 @@ def write_config(config, filename):
                 continue
             if isinstance(value, bool):
                 value = "true" if value else "false"
+            elif isinstance(value, str) and not value:
+                value = '""'
             lines.append(f"  {key}: {value}")
         lines.append("")
     Path(filename).write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -206,7 +292,6 @@ def load_graph_info():
             {"key": "polyimide", "label": "聚酰亚胺"},
             {"key": "polyurethane", "label": "聚氨酯"},
             {"key": "phenolic", "label": "酚醛树脂"},
-            {"key": "polyimide,polyurethane,phenolic", "label": "全部内置"},
             {"key": "custom", "label": "自定义片段"},
         ],
         "custom": custom_data,
@@ -247,12 +332,40 @@ def reset_run_state():
             "finished_at": "",
             "error": "",
             "log": [],
+            "iteration": 0,
+            "total_iterations": 0,
+            "evaluation_count": 0,
+            "top_k": 5,
+            "live_candidates": [],
         }
     )
 
 
-def set_stage(stage, message):
-    """更新当前阶段。"""
+def set_stage(stage, message, details=None):
+    """更新当前阶段，并接收 MCTS 的轮次和实时候选事件。"""
+    details = dict(details or {})
+    if "iteration" in details:
+        RUN_STATE["iteration"] = int(details["iteration"])
+    if "total_iterations" in details:
+        RUN_STATE["total_iterations"] = int(details["total_iterations"])
+
+    candidate = details.get("candidate")
+    if candidate:
+        upsert_live_candidate(candidate)
+
+    if stage == "candidate":
+        RUN_STATE["evaluation_count"] = max(
+            RUN_STATE["evaluation_count"], len(RUN_STATE["live_candidates"])
+        )
+        return
+    if stage == "evaluation":
+        RUN_STATE["evaluation_count"] = int(
+            details.get("evaluation", RUN_STATE["evaluation_count"])
+        )
+        RUN_STATE["stage"] = "mcts_lammps"
+        RUN_STATE["message"] = message
+        return
+
     RUN_STATE["stage"] = stage
     RUN_STATE["message"] = message
     RUN_STATE["log"].append(
@@ -265,29 +378,48 @@ def set_stage(stage, message):
     RUN_STATE["log"] = RUN_STATE["log"][-50:]
 
 
+def upsert_live_candidate(candidate):
+    """按序列更新实时候选，并始终保持 reward 从高到低排列。"""
+    sequence = list(candidate.get("sequence") or [])
+    if not sequence:
+        return
+
+    sequence_text = " -> ".join(str(item) for item in sequence)
+    rows = RUN_STATE["live_candidates"]
+    row = next((item for item in rows if item["sequence_text"] == sequence_text), None)
+    if row is None:
+        row = {"sequence": sequence, "sequence_text": sequence_text}
+        rows.append(row)
+
+    for key, value in candidate.items():
+        if key != "sequence":
+            row[key] = value
+    row["iteration"] = int(candidate.get("iteration", RUN_STATE["iteration"]))
+
+    rows.sort(key=lambda item: float(item.get("score", float("-inf"))), reverse=True)
+    for rank, item in enumerate(rows, start=1):
+        item["rank"] = rank
+
+
 def run_pipeline():
     """按阶段执行主流程。"""
     old_cwd = Path.cwd()
     os.chdir(PROJECT_ROOT)
     try:
         config = main.load_config(PROJECT_ROOT / "config.yaml")
+        RUN_STATE["total_iterations"] = int(config["mcts"]["iterations"])
+        RUN_STATE["top_k"] = int(config["mcts"]["top_k"])
         set_stage("search", "正在执行 MCTS 搜索")
-        candidates, feedback_records = main.run_search(config)
+        candidates, feedback_records = main.run_search(config, progress_callback=set_stage)
 
-        set_stage("build", "正在使用 RDKit 构建聚合物")
+        set_stage("export_build", "正在为最终 Top K 候选导出聚合物结构")
         build_results = main.build_candidates(candidates, config)
 
-        set_stage("packmol", "正在准备 Packmol 初始体系")
+        set_stage("export_packmol", "正在为最终 Top K 候选导出 Packmol 体系")
         system_results = main.prepare_systems(build_results, config)
 
-        set_stage("write_lammps", "正在写出 LAMMPS 热导率输入")
+        set_stage("export_lammps", "正在为最终 Top K 候选导出 LAMMPS 输入")
         thermal_input_results = main.write_thermal_inputs(system_results, config)
-
-        set_stage("run_lammps", "正在按配置运行 LAMMPS")
-        lammps_run_results = main.run_lammps_jobs(thermal_input_results, config)
-
-        set_stage("analyze", "正在解析热导率结果")
-        thermal_analysis_results = main.analyze_thermal_results(thermal_input_results, config)
 
         set_stage("save", "正在保存 CSV 和说明文件")
         main.save_outputs(
@@ -296,8 +428,6 @@ def run_pipeline():
             build_results,
             system_results,
             thermal_input_results,
-            lammps_run_results,
-            thermal_analysis_results,
             config,
         )
         set_stage("done", "运行完成")
@@ -316,7 +446,7 @@ def collect_counts():
         "candidates": len(read_csv(PROJECT_ROOT / "outputs" / "candidates.csv")),
         "build_results": len(read_csv(PROJECT_ROOT / "outputs" / "build_results.csv")),
         "thermal_inputs": len(read_csv(PROJECT_ROOT / "outputs" / "thermal_inputs.csv")),
-        "thermal_results": len(read_csv(PROJECT_ROOT / "outputs" / "thermal_results.csv")),
+        "low_k_database": len(read_csv(PROJECT_ROOT / "outputs" / "low_k_database.csv")),
     }
 
 
@@ -327,9 +457,118 @@ def load_results():
         "candidates": read_csv(output_dir / "candidates.csv"),
         "build_results": read_csv(output_dir / "build_results.csv"),
         "thermal_inputs": read_csv(output_dir / "thermal_inputs.csv"),
-        "thermal_results": read_csv(output_dir / "thermal_results.csv"),
+        "thermal_results": [],
         "low_k_database": read_csv(output_dir / "low_k_database.csv"),
     }
+
+
+def clear_output_data(payload):
+    """按前端请求清理输出数据。"""
+    if RUN_STATE.get("running"):
+        raise RuntimeError("pipeline is running, data cannot be cleared")
+
+    mode = str(payload.get("mode", "")).strip()
+    output_dir = PROJECT_ROOT / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    if mode == "selected_candidates":
+        keys = set(str(item) for item in payload.get("candidate_keys", []))
+        return clear_selected_candidates(output_dir / "candidates.csv", keys)
+    if mode == "all_candidates":
+        return clear_csv_rows(output_dir / "candidates.csv")
+    if mode == "thermal_results":
+        cleared = []
+        for name in ["low_k_database.csv", "feedback_records.csv"]:
+            result = clear_csv_rows(output_dir / name)
+            cleared.extend(result["cleared_files"])
+        return {"cleared_files": cleared, "message": "thermal feedback tables cleared"}
+    if mode == "all_tables":
+        cleared = []
+        for name in [
+            "candidates.csv",
+            "build_results.csv",
+            "system_results.csv",
+            "thermal_inputs.csv",
+            "low_k_database.csv",
+            "feedback_records.csv",
+        ]:
+            result = clear_csv_rows(output_dir / name)
+            cleared.extend(result["cleared_files"])
+        return {"cleared_files": cleared, "message": "all output tables cleared"}
+    raise ValueError(f"unknown clear mode: {mode}")
+
+
+def clear_selected_candidates(filename, candidate_keys):
+    """删除 candidates.csv 中选中的候选行。"""
+    path = Path(filename)
+    rows = read_csv(path)
+    if not rows or not candidate_keys:
+        return {"cleared_files": [], "removed": 0, "message": "no selected candidates"}
+
+    backup_file(path)
+    remaining = []
+    removed = 0
+    for row in rows:
+        key = candidate_row_key(row)
+        if key in candidate_keys:
+            removed += 1
+        else:
+            remaining.append(row)
+    write_csv_rows(path, remaining, rows[0].keys())
+    return {
+        "cleared_files": [str(path.relative_to(PROJECT_ROOT))],
+        "removed": removed,
+        "message": f"{removed} selected candidates removed",
+    }
+
+
+def clear_csv_rows(filename):
+    """清空 CSV 数据行并保留表头。"""
+    path = Path(filename)
+    rows = read_csv(path)
+    fieldnames = []
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("r", encoding="utf-8", newline="") as file_obj:
+            reader = csv.reader(file_obj)
+            fieldnames = next(reader, [])
+    if path.exists():
+        backup_file(path)
+    write_csv_rows(path, [], fieldnames)
+    return {"cleared_files": [str(path.relative_to(PROJECT_ROOT))], "removed": len(rows)}
+
+
+def backup_file(path):
+    """清理前备份输出表。"""
+    if not path.exists():
+        return None
+    archive_dir = PROJECT_ROOT / "outputs" / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    target = archive_dir / f"{path.stem}_{stamp}{path.suffix}"
+    shutil.copy2(path, target)
+    return target
+
+
+def write_csv_rows(filename, rows, fieldnames):
+    """写回 CSV。"""
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    names = list(fieldnames or [])
+    if not names and rows:
+        names = list(rows[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as file_obj:
+        if not names:
+            return
+        writer = csv.DictWriter(file_obj, fieldnames=names)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in names})
+
+
+def candidate_row_key(row):
+    """生成前后端共用的候选行标识。"""
+    rank = str(row.get("rank", "")).strip()
+    sequence = str(row.get("sequence_text", "")).strip()
+    return f"{rank}|{sequence}"
 
 
 def read_csv(filename):
@@ -350,4 +589,3 @@ def main_server():
 
 if __name__ == "__main__":
     main_server()
-

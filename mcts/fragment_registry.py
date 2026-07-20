@@ -220,6 +220,12 @@ class FragmentRegistry:
         else:
             custom_rows = custom_fragments or ()
 
+        # 前端把内置家族与自定义片段作为互斥搜索空间。只有明确选择
+        # custom 时才加载自定义文件，避免 CUSTOM_* 混入聚酰亚胺等内置家族。
+        if "custom" not in family_set:
+            custom_rows = ()
+            custom_transitions = {}
+
         if not isinstance(custom_transitions, Mapping):
             custom_transition_rows = {}
         else:
@@ -318,10 +324,6 @@ class FragmentRegistry:
         """给出某个片段后面允许接入的候选片段。"""
         return list(self._transitions.get(fragment, []))
 
-    def fragment_smiles(self, key: str) -> str:
-        """按片段 key 取得 SMILES。"""
-        return self._fragments[key].smiles
-
     def has_fragment(self, key: str) -> bool:
         """判断片段是否已经注册。"""
         return key in self._fragments
@@ -387,18 +389,18 @@ def get_fragment_registry() -> FragmentRegistry:
 # 25. custom_fragments.json 适合放课题中的候选片段。
 # 26. 自定义片段 key 不要和内置 key 重名，除非明确要覆盖内置定义。
 # 27. 自定义片段 smiles 必须能被 RDKit 的 Chem.MolFromSmiles 解析。
-# 28. 自定义片段最好先用 DP=1 或 DP=2 做小规模试建。
+# 28. 自定义片段最好先单独做一次重复单元拼接检查。
 # 29. 如果小规模拼接失败，通常是虚拟端点或价态写法有问题。
 # 30. 如果 UFF 优化失败但 PDB 已生成，可以先检查初始三维构象。
 # 31. custom_transitions 不写时，自定义片段默认互相可接并可 End。
 # 32. 正式筛选建议写 custom_transitions，避免 MCTS 搜索无意义组合。
 # 33. transitions 里的 End 表示该路径可以终止。
-# 34. transitions 里不出现 End 时，路径只能靠 max_steps 截断。
-# 35. max_steps 是 MCTS 片段序列的最大长度，不是聚合度。
-# 36. degree_of_polymerization 才是重复该片段序列的次数。
-# 37. DP=10 且序列 A-B 表示 A-B 重复十次。
-# 38. DP=10 且序列 A'-B-C-B 表示这四段组成的单元重复十次。
-# 39. 低热导目标使用 reward=1/(k+offset) 的方向。
+# 34. 达到 max_steps 后状态机会强制补上 End，结束当前重复单元。
+# 35. max_steps 只计算真实片段，不计算 Start 和 End，也不是聚合度。
+# 36. 聚合度由重复单元轮廓长度和目标链长自动计算。
+# 37. 不同重复单元长度不同，因此自动得到的实际 DP 也可以不同。
+# 38. build_results.csv 会记录实际 DP 和估算链长，便于人工复核。
+# 39. 低热导目标使用 reward=1/(1+k/reward_scale) 的方向。
 # 40. 因此 MCTS 分数越高，代表估计或反馈的热导率越低。
 # 41. 启发式奖励只负责快速导向，不能替代最终 LAMMPS 结果。
 # 42. thermal feedback 模式会把 LAMMPS 后处理结果反馈到节点。
@@ -422,7 +424,7 @@ def get_fragment_registry() -> FragmentRegistry:
 # 60. 如果 LAMMPS 报键跨越盒子，先检查 PDB 初始构象和盒子尺寸。
 # 61. 如果需要真实热导率，后续还要补可靠力场和充分弛豫。
 # 62. 当前快速脚本主要用于流程验证和低热导候选的第一轮筛选。
-# 63. 生产计算时不建议直接使用 pair_style zero 的结果做结论。
+# 63. 未参数化的 data 会被 Green-Kubo 输入生成器拒绝，不能进入 thermal reward。
 # 64. 自定义片段的命名建议使用体系前缀，如 PU_、PF_、CUSTOM_。
 # 65. 命名清楚以后，结果表里的序列更容易追溯。
 # 66. 片段库扩展时不要直接删除旧 key，历史输出可能还会引用它们。

@@ -5,7 +5,12 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from md_engine import read_pdb_topology, write_lammps_data, write_lammps_data_from_template
+from md_engine import (
+    read_pdb_topology,
+    write_lammps_data,
+    write_lammps_data_from_template,
+    write_uff_lammps_data_from_template,
+)
 
 
 @dataclass
@@ -20,6 +25,8 @@ class InitialSystemResult:
     molecule_count: int
     success: bool
     message: str = ""
+    force_field: str = "topology_only"
+    force_field_ready: bool = False
 
 
 def prepare_initial_system(
@@ -29,6 +36,8 @@ def prepare_initial_system(
     box_size=60.0,
     tolerance=2.0,
     packmol_executable="packmol",
+    template_mol=None,
+    force_field="uff_screening",
 ):
     """由单链 PDB 生成单链 data，并尝试通过 Packmol 生成多链初始体系。"""
     template_path = Path(template_pdb)
@@ -78,13 +87,38 @@ def prepare_initial_system(
             message=run_result.stderr.strip() or run_result.stdout.strip(),
         )
 
-    write_lammps_data_from_template(
-        template_pdb=template_path,
-        coordinate_pdb=packed_pdb,
-        filename=system_data,
-        molecule_count=molecule_count,
-        box_size=box_size,
-    )
+    try:
+        if force_field == "uff_screening" and template_mol:
+            write_uff_lammps_data_from_template(
+                template_mol=template_mol,
+                coordinate_pdb=packed_pdb,
+                filename=system_data,
+                molecule_count=molecule_count,
+                box_size=box_size,
+            )
+            force_field_ready = True
+        else:
+            write_lammps_data_from_template(
+                template_pdb=template_path,
+                coordinate_pdb=packed_pdb,
+                filename=system_data,
+                molecule_count=molecule_count,
+                box_size=box_size,
+            )
+            force_field_ready = False
+    except (OSError, ValueError) as error:
+        return InitialSystemResult(
+            template_pdb=str(template_path),
+            single_data_path=str(single_data),
+            packmol_input_path=str(packmol_input),
+            packed_pdb_path=str(packed_pdb),
+            system_data_path="",
+            molecule_count=molecule_count,
+            success=False,
+            message=f"force-field parameterization failed: {error}",
+            force_field=str(force_field),
+            force_field_ready=False,
+        )
 
     return InitialSystemResult(
         template_pdb=str(template_path),
@@ -95,6 +129,8 @@ def prepare_initial_system(
         molecule_count=molecule_count,
         success=True,
         message="ok",
+        force_field=str(force_field),
+        force_field_ready=force_field_ready,
     )
 
 

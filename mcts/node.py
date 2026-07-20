@@ -64,12 +64,6 @@ class MCTSNode:
         )
         return reward_term + exploration_term
 
-    def most_visited_child(self):
-        """搜索结束后通常用访问次数最多的子节点作为稳定选择。"""
-        if not self.children:
-            return None
-        return max(self.children, key=lambda child: child.visits)
-
     def backpropagate(self, reward):
         """把一次模拟得到的分数沿父节点方向回传。"""
         self.visits += 1

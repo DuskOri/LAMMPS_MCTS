@@ -1,21 +1,22 @@
 mcts:
-  iterations: 300
-  max_steps: 6
+  iterations: 2
+  max_steps: 3
   start_fragment: Start
-  top_k: 5
+  top_k: 3
   exploration_weight: 1.41421356237
   rollout_limit: 32
   random_seed: 7
   feedback_mode: heuristic
-  feedback_max_evaluations: 10
+  feedback_every_iteration: false
+  feedback_max_evaluations: 2
   feedback_output_dir: outputs/mcts_feedback
   feedback_run_lammps: false
-  feedback_reward_offset: 0.05
-  feedback_fallback_to_heuristic: true
+  feedback_reward_scale: 0.2
+  feedback_fallback_to_heuristic: false
   feedback_failure_reward: -1.0
 
 chemistry:
-  active_families: polyimide,polyurethane,phenolic
+  active_families: polyimide
   custom_fragment_file: custom_fragments.json
   ai_enabled: false
   ai_api_url: https://api.openai.com/v1/chat/completions
@@ -28,37 +29,55 @@ chemistry:
   ai_timeout_seconds: 60
   ai_validate_rdkit: true
   ai_prompt: Generate low thermal conductivity polymer fragments for MCTS screening.
+  custom_fragments: ""
   allow_custom_self_transitions: true
 
 polymer:
-  degree_of_polymerization: 10
+  target_chain_length_angstrom: 120.0
+  min_degree_of_polymerization: 1
+  max_degree_of_polymerization: 100
   build_pdb: true
 
 system:
   prepare_initial_system: true
-  molecule_count: 10
-  box_size: 60.0
+  molecule_count: 4
+  box_size: 45.0
   tolerance: 2.0
   packmol_executable: C:/DuskORI/Application/miniconda/envs/polymer_mcts/Scripts/packmol.exe
+  force_field: uff_screening
 
 thermal_conductivity:
+  profile: quick
   write_fast_input: true
+  method: rapid_green_kubo
   temperature: 300.0
-  hot_temperature: 450.0
-  cold_temperature: 150.0
+  pressure: 1.0
   timestep: 0.5
   tdamp: 50.0
+  pdamp: 500.0
   cutoff: 12.0
-  equil_steps: 5000
-  gradient_steps: 20000
+  nvt_steps: 2000
+  npt_steps: 8000
+  production_steps: 30000
+  sample_nevery: 10
+  correlation_samples: 300
+  thermo_every: 500
   dump_every: 5000
+  random_seed: 87287
+  pair_style: lj/cut/coul/long 12.0
+  bond_style: harmonic
+  angle_style: harmonic
+  dihedral_style: harmonic
+  improper_style: cvff
+  kspace_style: pppm 1.0e-4
+  special_bonds: amber
+  force_field_include: ""
   analyze_outputs: true
-  trim_fraction: 0.20
+  trim_fraction: 0.2
 
 lammps:
-  run_enabled: false
   executable: C:/DuskORI/Application/LAMMPS/bin/lmp.exe
-  timeout_seconds: 120
+  timeout_seconds: 1800
 
 output:
   directory: outputs
@@ -66,7 +85,6 @@ output:
   build_results_csv: build_results.csv
   system_results_csv: system_results.csv
   thermal_inputs_csv: thermal_inputs.csv
-  lammps_runs_csv: lammps_runs.csv
-  thermal_results_csv: thermal_results.csv
   low_k_database_csv: low_k_database.csv
   feedback_records_csv: feedback_records.csv
+  export_final_structures: true

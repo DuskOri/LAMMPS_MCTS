@@ -34,9 +34,14 @@ def write_build_results_csv(results, filename):
             "index": index,
             "sequence": " ".join(result.sequence),
             "dp": result.dp,
+            "dp_mode": result.dp_mode,
+            "target_length_angstrom": result.target_length_angstrom,
+            "repeat_unit_length_angstrom": result.repeat_unit_length_angstrom,
+            "estimated_chain_length_angstrom": result.estimated_chain_length_angstrom,
             "success": result.success,
             "smiles": result.smiles,
             "pdb_path": result.pdb_path,
+            "mol_path": result.mol_path,
             "message": result.message,
         }
         row.update(features)
@@ -58,6 +63,8 @@ def write_system_results_csv(results, filename):
                 "packed_pdb_path": result.packed_pdb_path,
                 "system_data_path": result.system_data_path,
                 "molecule_count": result.molecule_count,
+                "force_field": result.force_field,
+                "force_field_ready": result.force_field_ready,
                 "success": result.success,
                 "message": result.message,
             }
@@ -75,55 +82,15 @@ def write_thermal_input_results_csv(results, filename):
                 "index": index,
                 "data_path": result.data_path,
                 "input_path": result.input_path,
-                "flux_output": result.flux_output,
-                "temp_output": result.temp_output,
+                "method": result.method,
+                "correlation_output": result.correlation_output,
+                "conductivity_output": result.conductivity_output,
                 "dump_output": result.dump_output,
                 "success": result.success,
                 "message": result.message,
             }
         )
 
-    _write_rows(rows, filename)
-
-
-def write_lammps_run_results_csv(results, filename):
-    """保存 LAMMPS 执行结果。"""
-    rows = []
-    for index, result in enumerate(results, start=1):
-        rows.append(
-            {
-                "index": index,
-                "input_path": result.input_path,
-                "log_path": result.log_path,
-                "success": result.success,
-                "returncode": result.returncode,
-                "message": result.message,
-            }
-        )
-    _write_rows(rows, filename)
-
-
-def write_thermal_analysis_results_csv(results, filename):
-    """保存热导率后处理结果。"""
-    rows = []
-    sorted_results = sorted(
-        results,
-        key=lambda item: (not item.success, item.conductivity_w_mk),
-    )
-    for index, result in enumerate(sorted_results, start=1):
-        rows.append(
-            {
-                "low_k_rank": index,
-                "input_path": result.input_path,
-                "flux_path": result.flux_path,
-                "temp_path": result.temp_path,
-                "heat_flux": result.heat_flux,
-                "temperature_gradient": result.temperature_gradient,
-                "conductivity_w_mk": result.conductivity_w_mk,
-                "success": result.success,
-                "message": result.message,
-            }
-        )
     _write_rows(rows, filename)
 
 
@@ -146,6 +113,37 @@ def write_mcts_feedback_records_csv(records, filename):
                 "input_path": record.input_path,
             }
         )
+    _write_rows(rows, filename)
+
+
+def write_search_low_k_database_csv(candidates, records, filename):
+    """按 MCTS 搜索排名写出低热导候选数据库。"""
+    record_map = {}
+    for record in records:
+        key = tuple(record.sequence)
+        current = record_map.get(key)
+        if current is None or record.reward > current.reward:
+            record_map[key] = record
+
+    rows = []
+    for index, candidate in enumerate(candidates, start=1):
+        sequence = candidate.get("sequence", [])
+        record = record_map.get(tuple(sequence))
+        row = {
+            "low_k_rank": index,
+            "sequence": " ".join(sequence),
+            "score": candidate.get("score", ""),
+            "average_reward": candidate.get("average_reward", ""),
+            "visits": candidate.get("visits", ""),
+            "reward": record.reward if record is not None else candidate.get("score", ""),
+            "conductivity_w_mk": record.conductivity_w_mk if record is not None else "",
+            "success": record.success if record is not None else "",
+            "message": record.message if record is not None else "ranked by MCTS reward",
+            "input_path": record.input_path if record is not None else "",
+        }
+        row.update(extract_sequence_features(sequence))
+        rows.append(row)
+
     _write_rows(rows, filename)
 
 

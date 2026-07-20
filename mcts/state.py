@@ -13,7 +13,7 @@ class PolymerState:
     """保存一条正在组装的片段路径。"""
 
     sequence: tuple[str, ...] = field(default_factory=lambda: ("Start",))
-    max_steps: int = 8
+    max_steps: int = 5
 
     @property
     def current_fragment(self):
@@ -25,19 +25,31 @@ class PolymerState:
         """去掉 Start 后给外部模块使用的片段列表。"""
         return [fragment for fragment in self.sequence if fragment != "Start"]
 
+    @property
+    def repeat_unit_fragments(self):
+        """返回重复单元中的真实化学片段，不计 Start 和 End。"""
+        return [
+            fragment
+            for fragment in self.sequence
+            if fragment not in ("Start", "End")
+        ]
+
     def is_terminal(self):
-        """遇到 End 或达到最大步数时，本轮组装结束。"""
-        return self.current_fragment == "End" or len(self.fragments) >= self.max_steps
+        """选择 End 后，一个重复单元才算构建完成。"""
+        return self.current_fragment == "End"
 
     def legal_actions(self):
         """给出当前状态还能选择的下一步片段。"""
         if self.is_terminal():
             return []
 
-        actions = get_allowed_fragments(self.current_fragment)
-        if len(self.fragments) >= self.max_steps - 1 and "End" in actions:
+        if len(self.repeat_unit_fragments) >= self.max_steps:
             return ["End"]
-        return actions
+
+        actions = get_allowed_fragments(self.current_fragment)
+        if not actions and self.repeat_unit_fragments:
+            return ["End"]
+        return list(actions)
 
     def take_action(self, action):
         """执行一次片段选择，返回新的状态对象。"""

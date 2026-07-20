@@ -11,11 +11,41 @@ const state = {
     fragments: [],
     transitions: {}
   },
+  selectedCandidates: new Set(),
   apiGenerated: null,
-  pollTimer: null
+  pollTimer: null,
+  latestStatus: null
 };
 
-const stageOrder = ["search", "build", "packmol", "write_lammps", "run_lammps", "analyze", "save"];
+const ROLE_OPTIONS = [
+  "rigid",
+  "aromatic",
+  "flexible",
+  "ether",
+  "imide",
+  "urethane",
+  "phenolic",
+  "aliphatic",
+  "diol",
+  "bridge",
+  "polar"
+];
+
+const ROLE_TEXT = {
+  rigid: "刚性片段",
+  aromatic: "芳香结构",
+  flexible: "柔性链段",
+  ether: "醚键",
+  imide: "酰亚胺",
+  urethane: "氨基甲酸酯",
+  phenolic: "酚醛/酚环",
+  aliphatic: "脂肪链",
+  diol: "二醇软段",
+  bridge: "桥接单元",
+  polar: "极性基团"
+};
+
+const stageOrder = ["search", "build", "packmol", "write_lammps", "run_lammps", "mcts_lammps", "export", "save"];
 const stageText = {
   idle: "等待运行",
   search: "MCTS 搜索",
@@ -23,10 +53,16 @@ const stageText = {
   packmol: "Packmol 初始体系",
   write_lammps: "写出 LAMMPS 输入",
   run_lammps: "运行 LAMMPS",
-  analyze: "热导率后处理",
+  mcts_lammps: "热导 reward 回传",
+  export: "导出最终 Top K",
   save: "保存数据库",
   done: "完成",
   failed: "失败"
+};
+
+const profileTimeouts = {
+  quick: 1800,
+  standard: 7200
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -37,11 +73,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function bindTabs() {
   document.querySelectorAll(".nav-button").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.classList.contains("active")));
     button.addEventListener("click", () => {
       const tab = button.dataset.tab;
-      document.querySelectorAll(".nav-button").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".nav-button").forEach((item) => {
+        item.classList.remove("active");
+        item.setAttribute("aria-selected", "false");
+      });
       document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
+      button.setAttribute("aria-selected", "true");
       document.getElementById(tab).classList.add("active");
       if (tab === "database") loadResults();
     });
@@ -54,6 +95,10 @@ function bindActions() {
   document.getElementById("runNowBtn").addEventListener("click", runPipeline);
   document.getElementById("refreshResultsBtn").addEventListener("click", loadResults);
   document.getElementById("candidateFilter").addEventListener("input", renderCandidateTable);
+  document.getElementById("iterationsInput").addEventListener("input", updateIdleIterationTarget);
+  document.getElementById("gkProfileSelect").addEventListener("change", updateProfileTimeout);
+  document.getElementById("clearSelectedCandidatesBtn").addEventListener("click", clearSelectedCandidates);
+  document.getElementById("clearAllCandidatesBtn").addEventListener("click", clearAllCandidates);
 
   document.getElementById("addGraphNodeBtn").addEventListener("click", addGraphNode);
   document.getElementById("loadGraphExampleBtn").addEventListener("click", loadGraphExample);
@@ -62,7 +107,15 @@ function bindActions() {
   document.getElementById("addEndEdgeBtn").addEventListener("click", addEndEdge);
   document.getElementById("saveGraphBtn").addEventListener("click", saveGraphDraft);
   document.getElementById("generateByApiBtn").addEventListener("click", generateByApi);
+  document.getElementById("applyApiGraphBtn").addEventListener("click", applyApiGeneratedToGraph);
   document.getElementById("downloadApiJsonBtn").addEventListener("click", () => downloadText("ai_fragments.json", getApiJson()));
+  document.getElementById("graphNodeRoles").addEventListener("input", syncRoleChipsFromField);
+  document.getElementById("graphNodeSmiles").addEventListener("input", refreshRoleHint);
+  document.getElementById("inferRolesBtn").addEventListener("click", inferRolesFromCurrentSmiles);
+  document.getElementById("inferRolesByApiBtn").addEventListener("click", inferRolesByApi);
+  document.querySelectorAll("input[name='rewardMode']").forEach((input) => {
+    input.addEventListener("change", updateRoleHelperText);
+  });
 }
 
 async function loadInitialData() {
@@ -70,6 +123,8 @@ async function loadInitialData() {
   await loadResults();
   await refreshStatus();
   renderCommands();
+  renderRoleChips();
+  updateRoleHelperText();
   renderGraphEditor();
 }
 
@@ -99,25 +154,56 @@ async function loadConfig() {
 }
 
 function fillConfigForm(config) {
-  document.getElementById("dpInput").value = config.dp || 10;
+  document.getElementById("targetLengthInput").value = config.target_length_angstrom || 120;
   document.getElementById("iterationsInput").value = config.iterations || 300;
+  document.getElementById("explorationWeightInput").value = config.exploration_weight || 1.41421356237;
   document.getElementById("topKInput").value = config.top_k || 5;
-  document.getElementById("maxStepsInput").value = config.max_steps || 6;
-  document.getElementById("graphPresetSelect").value = config.active_families || "polyimide,polyurethane,phenolic";
-  document.getElementById("runLammpsInput").checked = Boolean(config.run_lammps);
-  document.getElementById("thermalFeedbackInput").checked = config.feedback_mode === "thermal";
+  document.getElementById("maxStepsInput").value = config.max_steps || 5;
+  const builtinFamilies = ["polyimide", "polyurethane", "phenolic", "custom"];
+  const activeFamily = builtinFamilies.includes(config.active_families)
+    ? config.active_families
+    : "polyimide";
+  document.getElementById("graphPresetSelect").value = activeFamily;
+  document.getElementById("gkProfileSelect").value = config.gk_profile === "standard" ? "standard" : "quick";
+  document.getElementById("lammpsTimeoutInput").value = Number(config.timeout_seconds) || 0;
+  setRewardMode(config.feedback_mode === "thermal" && config.feedback_run_lammps !== false ? "thermal" : "heuristic");
 }
 
 function readConfigForm() {
+  const rewardMode = getRewardMode();
+  const useThermalReward = rewardMode === "thermal";
   return {
-    dp: Number(document.getElementById("dpInput").value || 10),
+    target_length_angstrom: Number(document.getElementById("targetLengthInput").value || 120),
     iterations: Number(document.getElementById("iterationsInput").value || 300),
+    exploration_weight: Number(document.getElementById("explorationWeightInput").value || 1.41421356237),
     top_k: Number(document.getElementById("topKInput").value || 5),
-    max_steps: Number(document.getElementById("maxStepsInput").value || 6),
+    max_steps: Number(document.getElementById("maxStepsInput").value || 5),
     active_families: document.getElementById("graphPresetSelect").value,
-    run_lammps: document.getElementById("runLammpsInput").checked,
-    feedback_mode: document.getElementById("thermalFeedbackInput").checked ? "thermal" : "heuristic"
+    gk_profile: document.getElementById("gkProfileSelect").value,
+    timeout_seconds: Number(document.getElementById("lammpsTimeoutInput").value || 0),
+    run_lammps: useThermalReward,
+    feedback_mode: useThermalReward ? "thermal" : "heuristic",
+    feedback_run_lammps: useThermalReward,
+    feedback_every_iteration: useThermalReward,
+    feedback_max_evaluations: Number(document.getElementById("iterationsInput").value || 300)
   };
+}
+
+function updateProfileTimeout() {
+  const profile = document.getElementById("gkProfileSelect").value;
+  document.getElementById("lammpsTimeoutInput").value = profileTimeouts[profile] || 1800;
+}
+
+function getRewardMode() {
+  const selected = document.querySelector("input[name='rewardMode']:checked");
+  return selected ? selected.value : "thermal";
+}
+
+function setRewardMode(mode) {
+  const value = mode === "heuristic" ? "heuristic" : "thermal";
+  const input = document.querySelector(`input[name='rewardMode'][value='${value}']`);
+  if (input) input.checked = true;
+  updateRoleHelperText();
 }
 
 async function saveConfig() {
@@ -163,18 +249,126 @@ async function refreshStatus() {
 }
 
 function updateStatus(status) {
+  state.latestStatus = status;
   showStatus(status.stage, status.message || "");
+  setRunButtonState(Boolean(status.running));
+  renderLoopProgress(status);
+  renderLiveTopK(status);
   if (status.counts) {
-    document.getElementById("candidateCount").textContent = status.counts.candidates || 0;
+    const liveCount = Array.isArray(status.live_candidates) ? status.live_candidates.length : 0;
+    document.getElementById("candidateCount").textContent = status.running
+      ? liveCount
+      : (status.counts.candidates || liveCount || 0);
     document.getElementById("buildCount").textContent = status.counts.build_results || 0;
     document.getElementById("inputCount").textContent = status.counts.thermal_inputs || 0;
   }
 }
 
+function updateIdleIterationTarget() {
+  if (state.latestStatus?.running) return;
+  const total = Math.max(0, Number(document.getElementById("iterationsInput").value) || 0);
+  renderLoopProgress({
+    ...(state.latestStatus || {}),
+    iteration: 0,
+    total_iterations: total,
+    evaluation_count: 0
+  });
+}
+
+function renderLoopProgress(status) {
+  const iteration = Math.max(0, Number(status.iteration) || 0);
+  const inputTotal = Number(document.getElementById("iterationsInput")?.value) || 0;
+  const total = Math.max(0, Number(status.total_iterations) || inputTotal || Number(state.config.iterations) || 0);
+  const evaluations = Math.max(0, Number(status.evaluation_count) || 0);
+  const percent = total > 0 ? Math.min(100, (iteration / total) * 100) : 0;
+  document.getElementById("iterationLabel").textContent = `第 ${iteration} / ${total} 轮`;
+  document.getElementById("evaluationLabel").textContent = `已评价 ${evaluations} 个候选`;
+  document.getElementById("iterationProgressBar").style.width = `${percent}%`;
+}
+
+function renderLiveTopK(status) {
+  const topK = Math.max(1, Number(status.top_k) || Number(state.config.top_k) || 5);
+  const rows = (status.live_candidates || []).slice(0, topK).map((row, index) => ({
+    rank: index + 1,
+    sequence_text: row.sequence_text || (row.sequence || []).join(" -> "),
+    score: formatLiveNumber(row.score),
+    conductivity_w_mk: row.conductivity_w_mk === undefined ? "--" : formatLiveNumber(row.conductivity_w_mk),
+    visits: row.visits || 1,
+    iteration: row.iteration || "--",
+    success: row.success === undefined ? "--" : (row.success ? "成功" : "失败")
+  }));
+  renderTable("liveTopKTable", rows, [
+    "rank",
+    "sequence_text",
+    "score",
+    "conductivity_w_mk",
+    "visits",
+    "iteration",
+    "success"
+  ]);
+
+  const meta = document.getElementById("liveTopKMeta");
+  meta.textContent = rows.length
+    ? `当前显示 ${rows.length} / ${status.live_candidates.length} 个已评价序列`
+    : "等待产生候选";
+
+  const validKappa = rows
+    .filter((row) => row.success === "成功")
+    .map((row) => Number(row.conductivity_w_mk))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  if (validKappa.length) {
+    document.getElementById("bestKappa").textContent = `${Math.min(...validKappa).toFixed(4)} W/mK`;
+  }
+}
+
+function formatLiveNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return number.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function showStatus(stage, message) {
-  document.getElementById("statusTitle").textContent = stageText[stage] || stage;
+  const displayStage = resolveDisplayStage(stage, message);
+  document.getElementById("statusTitle").textContent = stageText[displayStage] || displayStage;
   document.getElementById("statusMessage").textContent = message || "";
-  renderStageList(stage);
+  const badge = document.getElementById("statusBadge");
+  if (badge) {
+    badge.classList.remove("is-running", "is-done", "is-failed");
+    const label = badge.querySelector("b");
+    if (stage === "failed") {
+      badge.classList.add("is-failed");
+      label.textContent = "异常";
+    } else if (stage === "done") {
+      badge.classList.add("is-done");
+      label.textContent = "完成";
+    } else if (stage && stage !== "idle") {
+      badge.classList.add("is-running");
+      label.textContent = "运行中";
+    } else {
+      label.textContent = "就绪";
+    }
+  }
+  renderStageList(displayStage);
+}
+
+function resolveDisplayStage(stage, message) {
+  if (String(stage).startsWith("export_")) return "export";
+  if (stage !== "mcts_lammps") return stage;
+
+  const text = String(message || "").toLowerCase();
+  if (text.includes("building polymer")) return "build";
+  if (text.includes("packmol")) return "packmol";
+  if (text.includes("writing lammps")) return "write_lammps";
+  if (text.includes("running lammps")) return "run_lammps";
+  return "mcts_lammps";
+}
+
+function setRunButtonState(running) {
+  const button = document.getElementById("runNowBtn");
+  const label = button.querySelector(".run-label");
+  button.disabled = running;
+  button.classList.toggle("is-running", running);
+  label.textContent = running ? "正在运行" : "运行搜索";
 }
 
 function renderStageList(currentStage) {
@@ -209,8 +403,6 @@ function renderAllTables() {
     "low_k_rank",
     "input_path",
     "conductivity_w_mk",
-    "heat_flux",
-    "temperature_gradient",
     "success",
     "message"
   ]);
@@ -219,8 +411,6 @@ function renderAllTables() {
     "low_k_rank",
     "input_path",
     "conductivity_w_mk",
-    "heat_flux",
-    "temperature_gradient",
     "success",
     "message"
   ]);
@@ -233,7 +423,7 @@ function renderCandidateTable() {
     if (!filter) return true;
     return Object.values(row).join(" ").toLowerCase().includes(filter);
   });
-  renderTable("candidateTable", rows, [
+  renderCandidateSelectionTable(rows, [
     "rank",
     "sequence_text",
     "score",
@@ -243,6 +433,107 @@ function renderCandidateTable() {
     "flexible_ratio",
     "aromatic_ratio"
   ]);
+  updateCandidateSelectionCount();
+}
+
+function renderCandidateSelectionTable(rows, preferredColumns) {
+  const table = document.getElementById("candidateTable");
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+  thead.innerHTML = "";
+  tbody.innerHTML = "";
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = "<tr><td>暂无数据</td></tr>";
+    return;
+  }
+
+  const allColumns = Object.keys(rows[0]);
+  const columns = preferredColumns.filter((key) => allColumns.includes(key));
+  allColumns.forEach((key) => {
+    if (!columns.includes(key) && columns.length < 9) columns.push(key);
+  });
+
+  const headerRow = document.createElement("tr");
+  const selectTh = document.createElement("th");
+  const selectAll = document.createElement("input");
+  selectAll.type = "checkbox";
+  selectAll.title = "选择当前显示的候选";
+  selectAll.checked = rows.every((row) => state.selectedCandidates.has(candidateRowKey(row)));
+  selectAll.addEventListener("change", () => {
+    rows.forEach((row) => {
+      const key = candidateRowKey(row);
+      if (selectAll.checked) state.selectedCandidates.add(key);
+      else state.selectedCandidates.delete(key);
+    });
+    renderCandidateTable();
+  });
+  selectTh.appendChild(selectAll);
+  headerRow.appendChild(selectTh);
+  columns.forEach((column) => {
+    const th = document.createElement("th");
+    th.textContent = column;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+
+  rows.forEach((row) => {
+    const key = candidateRowKey(row);
+    const tr = document.createElement("tr");
+    const selectTd = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.selectedCandidates.has(key);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.selectedCandidates.add(key);
+      else state.selectedCandidates.delete(key);
+      updateCandidateSelectionCount();
+    });
+    selectTd.appendChild(checkbox);
+    tr.appendChild(selectTd);
+    columns.forEach((column) => {
+      const td = document.createElement("td");
+      td.textContent = row[column] || "";
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function candidateRowKey(row) {
+  return `${String(row.rank || "").trim()}|${String(row.sequence_text || "").trim()}`;
+}
+
+function updateCandidateSelectionCount() {
+  const countNode = document.getElementById("candidateSelectionCount");
+  if (countNode) countNode.textContent = `已选 ${state.selectedCandidates.size} 个候选`;
+}
+
+async function clearSelectedCandidates() {
+  const selected = Array.from(state.selectedCandidates);
+  if (selected.length === 0) {
+    alert("请先勾选要清除的候选序列。");
+    return;
+  }
+  if (!confirm(`确认清除 ${selected.length} 个候选序列？清除前会自动备份 candidates.csv。`)) return;
+  await clearData({ mode: "selected_candidates", candidate_keys: selected });
+}
+
+async function clearAllCandidates() {
+  if (!confirm("确认清空全部候选序列？清除前会自动备份 candidates.csv。")) return;
+  await clearData({ mode: "all_candidates" });
+}
+
+async function clearData(payload) {
+  try {
+    const result = await apiPost("/api/clear-data", payload);
+    if (result.ok === false) throw new Error(result.error || "clear data failed");
+    state.selectedCandidates.clear();
+    await loadResults();
+    await refreshStatus();
+    showStatus("idle", result.message || "数据已清除。");
+  } catch (error) {
+    showStatus("failed", `清除失败：${error.message}`);
+  }
 }
 
 function renderMetricsFromResults() {
@@ -290,11 +581,177 @@ function renderTable(tableId, rows, preferredColumns) {
   });
 }
 
+function renderRoleChips() {
+  const container = document.getElementById("roleChips");
+  if (!container) return;
+  container.innerHTML = "";
+  ROLE_OPTIONS.forEach((role) => {
+    const label = document.createElement("label");
+    label.className = "role-chip";
+    label.title = ROLE_TEXT[role] || role;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = role;
+    checkbox.addEventListener("change", syncRoleFieldFromChips);
+
+    const span = document.createElement("span");
+    span.textContent = role;
+
+    label.appendChild(checkbox);
+    label.appendChild(span);
+    container.appendChild(label);
+  });
+  syncRoleChipsFromField();
+}
+
+function readRolesFromField() {
+  return normalizeRoles(document.getElementById("graphNodeRoles").value);
+}
+
+function setRolesToField(roles, message) {
+  const cleaned = normalizeRoles(roles);
+  document.getElementById("graphNodeRoles").value = cleaned.join(",");
+  syncRoleChipsFromField();
+  refreshRoleHint(message);
+}
+
+function syncRoleFieldFromChips() {
+  const selected = Array.from(document.querySelectorAll("#roleChips input:checked")).map((item) => item.value);
+  document.getElementById("graphNodeRoles").value = selected.join(",");
+  refreshRoleHint();
+}
+
+function syncRoleChipsFromField() {
+  const roles = new Set(readRolesFromField());
+  document.querySelectorAll("#roleChips input").forEach((input) => {
+    input.checked = roles.has(input.value);
+  });
+  refreshRoleHint();
+}
+
+function refreshRoleHint(message) {
+  const node = document.getElementById("roleHint");
+  if (!node) return;
+  if (message) {
+    node.textContent = message;
+    return;
+  }
+  const roles = readRolesFromField();
+  const mode = getRewardMode();
+  if (roles.length) {
+    node.textContent = `当前 roles：${roles.join(", ")}。`;
+  } else if (mode === "heuristic") {
+    node.textContent = "启发式 reward 依赖 roles；可以点选标签，或按 SMILES/API 自动判断。";
+  } else {
+    node.textContent = "LAMMPS reward 主要使用热导率结果，roles 可作为备用和结果说明。";
+  }
+}
+
+function updateRoleHelperText() {
+  refreshRoleHint();
+}
+
+function inferRolesFromCurrentSmiles() {
+  const smiles = document.getElementById("graphNodeSmiles").value.trim();
+  if (!smiles) {
+    alert("请先填写片段 SMILES。");
+    return;
+  }
+  const roles = inferRolesFromSmiles(smiles);
+  setRolesToField(roles, `已按 SMILES 粗判：${roles.join(", ") || "未识别到明显标签"}。`);
+}
+
+async function inferRolesByApi() {
+  const smiles = document.getElementById("graphNodeSmiles").value.trim();
+  const apiKey = document.getElementById("apiKeyInput").value.trim();
+  const apiUrl = document.getElementById("apiUrlInput").value.trim();
+  const model = document.getElementById("apiModelInput").value.trim();
+  if (!smiles) {
+    alert("请先填写片段 SMILES。");
+    return;
+  }
+  if (!apiKey || !apiUrl || !model) {
+    alert("请先在右侧 API 区域填写 API URL、Model 和 API Key。");
+    return;
+  }
+
+  refreshRoleHint("正在调用 API 判断 roles...");
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: "Classify polymer fragment roles. Return JSON only. Use only the provided role vocabulary."
+          },
+          {
+            role: "user",
+            content: [
+              `SMILES: ${smiles}`,
+              `Role vocabulary: ${ROLE_OPTIONS.join(", ")}`,
+              "Return format: {\"roles\":[\"flexible\",\"ether\"],\"reason\":\"short reason\"}.",
+              "The fragment is used for heuristic low thermal conductivity screening."
+            ].join("\n")
+          }
+        ]
+      })
+    });
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || JSON.stringify(data);
+    const parsed = parseJsonFromText(content);
+    const fallback = inferRolesFromSmiles(smiles);
+    const roles = normalizeRoles(parsed.roles || parsed.role || [], smiles);
+    setRolesToField(roles.length ? roles : fallback, parsed.reason ? `API 判断完成：${parsed.reason}` : "API 判断完成。");
+  } catch (error) {
+    const fallback = inferRolesFromSmiles(smiles);
+    setRolesToField(fallback, `API 判断失败，已使用本地粗判：${error.message}`);
+  }
+}
+
+function normalizeRoles(rawRoles, smiles = "") {
+  let values = [];
+  if (Array.isArray(rawRoles)) {
+    values = rawRoles;
+  } else if (typeof rawRoles === "string") {
+    values = rawRoles.split(",");
+  }
+  const cleaned = values
+    .map((item) => String(item).trim().toLowerCase())
+    .filter(Boolean)
+    .map((item) => item.replace(/\s+/g, "_"));
+  const known = new Set(ROLE_OPTIONS);
+  const roles = cleaned.filter((item) => known.has(item));
+  if (roles.length === 0 && smiles) roles.push(...inferRolesFromSmiles(smiles));
+  return Array.from(new Set(roles));
+}
+
+function inferRolesFromSmiles(smiles) {
+  const text = String(smiles || "");
+  const lower = text.toLowerCase();
+  const roles = [];
+  if (/c1|n1|o1|s1/.test(lower) || lower.includes("ccc")) roles.push("rigid", "aromatic");
+  if (/cccc|cc\[2\*\]|\[1\*\]cc/.test(lower) && !roles.includes("aromatic")) roles.push("flexible", "aliphatic");
+  if (lower.includes("o") && !lower.includes("n-c(=o)o")) roles.push("ether");
+  if (/ccocc|coc|o\[2\*\]|\[1\*\]o/.test(lower)) roles.push("flexible", "ether");
+  if (/n.*c\(=o\)|c\(=o\).*n/.test(lower)) roles.push("polar");
+  if (/nc\(=o\)o|oc\(=o\)n/.test(lower)) roles.push("urethane", "polar");
+  if (/c\(=o\)n.*c\(=o\)|n1.*c\(=o\)/.test(lower)) roles.push("imide", "rigid");
+  if (lower.includes("(o)") || lower.includes("c(o)") || lower.includes("co)")) roles.push("phenolic");
+  if (/c\[2\*\]|\[1\*\]c\[2\*\]/.test(lower)) roles.push("bridge");
+  if (/cco|occ|cccc/.test(lower)) roles.push("flexible");
+  return normalizeRoles(roles);
+}
+
 function addGraphNode() {
   const key = document.getElementById("graphNodeKey").value.trim();
   const smiles = document.getElementById("graphNodeSmiles").value.trim();
   const family = document.getElementById("graphNodeFamily").value.trim() || "custom";
-  const roles = document.getElementById("graphNodeRoles").value.split(",").map((item) => item.trim()).filter(Boolean);
+  const roles = normalizeRoles(document.getElementById("graphNodeRoles").value, smiles);
   if (!key || !smiles) {
     alert("片段 key 和 SMILES 不能为空。");
     return;
@@ -303,8 +760,13 @@ function addGraphNode() {
     alert("SMILES 必须包含 [1*] 和 [2*]。");
     return;
   }
+  if (roles.length === 0) {
+    alert("请至少选择一个 roles，或点击 SMILES/API 自动判断。");
+    return;
+  }
   state.graphDraft.fragments = state.graphDraft.fragments.filter((item) => item.key !== key);
   state.graphDraft.fragments.push({ key, smiles, family, label: key, group: family, roles, notes: "Configured in frontend." });
+  setRolesToField(roles);
   state.graphDraft.transitions[key] = state.graphDraft.transitions[key] || [];
   document.getElementById("edgeSource").value = key;
   renderGraphEditor();
@@ -560,8 +1022,8 @@ async function generateByApi() {
         model,
         temperature: 0.2,
         messages: [
-          { role: "system", content: "Generate polymer fragments for MCTS. Return JSON only. Each fragment SMILES must contain [1*] and [2*]." },
-          { role: "user", content: `${prompt}\nReturn at most ${maxFragments} fragments. JSON fields: fragments, transitions.` }
+          { role: "system", content: "Generate polymer fragments for MCTS. Return JSON only. Each fragment SMILES must contain [1*] and [2*]. Every fragment must include a roles array chosen from the provided vocabulary." },
+          { role: "user", content: `${prompt}\nReturn at most ${maxFragments} fragments. JSON fields: fragments, transitions. Role vocabulary: ${ROLE_OPTIONS.join(", ")}.` }
         ]
       })
     });
@@ -592,7 +1054,7 @@ function validateGeneratedConfig(data) {
       family: String(item.family || "ai_custom").trim(),
       label: String(item.label || item.key).trim(),
       group: String(item.group || "ai").trim(),
-      roles: Array.isArray(item.roles) ? item.roles : String(item.roles || "").split(",").map((role) => role.trim()).filter(Boolean),
+      roles: normalizeRoles(item.roles, item.smiles),
       notes: String(item.notes || "Generated by frontend API call.").trim()
     }));
   const validKeys = new Set(cleanedFragments.map((item) => item.key));
@@ -605,6 +1067,26 @@ function validateGeneratedConfig(data) {
     cleanedTransitions[item.key] = cleanedTransitions[item.key] || ["End"];
   });
   return { fragments: cleanedFragments, transitions: cleanedTransitions };
+}
+
+function applyApiGeneratedToGraph() {
+  if (!state.apiGenerated || !Array.isArray(state.apiGenerated.fragments)) {
+    alert("请先调用 API 生成片段配置。");
+    return;
+  }
+  state.graphDraft = JSON.parse(JSON.stringify(state.apiGenerated));
+  document.getElementById("graphPresetSelect").value = "custom";
+  const first = state.graphDraft.fragments[0];
+  if (first) {
+    document.getElementById("graphNodeKey").value = first.key || "";
+    document.getElementById("graphNodeSmiles").value = first.smiles || "";
+    document.getElementById("graphNodeFamily").value = first.family || "custom";
+    setRolesToField(first.roles || []);
+    document.getElementById("edgeSource").value = first.key || "";
+    document.getElementById("edgeTarget").value = (state.graphDraft.transitions[first.key] || [])[0] || "End";
+  }
+  renderGraphEditor();
+  refreshRoleHint("已把 API 生成的片段和 roles 应用到有向图编辑器。");
 }
 
 function getApiJson() {
@@ -622,7 +1104,19 @@ function downloadText(filename, text) {
 }
 
 function renderCommands() {
-  document.getElementById("serverCommand").textContent = "cd C:\\DuskORI\\Files\\Code\\LAMMPS_MCTS\\LAMMPS_MCTS\nC:\\DuskORI\\Application\\miniconda\\envs\\polymer_mcts\\python.exe web_server.py\n# 打开 http://localhost:8010/frontend/";
-  document.getElementById("mainCommand").textContent = "cd C:\\DuskORI\\Files\\Code\\LAMMPS_MCTS\\LAMMPS_MCTS\nC:\\DuskORI\\Application\\miniconda\\envs\\polymer_mcts\\python.exe main.py";
-  document.getElementById("lammpsCommand").textContent = "C:\\DuskORI\\Application\\LAMMPS\\bin\\lmp.exe -in outputs\\lammps\\candidate_001_fast_tc.in";
+  document.getElementById("serverCommand").textContent = [
+    "cd LAMMPS_MCTS",
+    "conda activate polymer_mcts",
+    "python web_server.py",
+    "# 打开 http://localhost:8010/frontend/"
+  ].join("\n");
+  document.getElementById("mainCommand").textContent = [
+    "cd LAMMPS_MCTS",
+    "conda activate polymer_mcts",
+    "python main.py"
+  ].join("\n");
+  document.getElementById("lammpsCommand").textContent = [
+    "# 需要先把 LAMMPS 加入 PATH，或在 config.yaml 中配置 lammps.executable",
+    "lmp -in outputs/lammps/candidate_001_rapid_gk.in"
+  ].join("\n");
 }

@@ -14,13 +14,13 @@ LAMMPS_MCTS 是一个面向低热导聚合物筛选的自动化建模与模拟�
 - 支持聚酰亚胺、聚氨酯、酚醛树脂和自定义片段。
 - 支持 AI API 自动生成片段和连接图。
 - 使用 RDKit 将片段序列拼接为聚合物链。
-- 支持设置聚合度 `degree_of_polymerization`。
-- 输出聚合物 PDB 文件。
-- 将 PDB 转换为 LAMMPS data 文件。
+- 按重复单元轮廓长度自动确定聚合度，使链长接近目标值，默认约 `120 Å`。
+- 输出保留键级的聚合物 MOL 文件和用于装箱的 PDB 文件。
+- 将 Packmol 坐标与 RDKit UFF 参数组合为筛选级 LAMMPS data 文件。
 - 调用 Packmol 生成多链初始体系。
-- 生成快速热导率 LAMMPS 输入脚本。
+- 生成快速 Green-Kubo 热导率 LAMMPS 输入脚本。
 - 可选择自动运行 LAMMPS。
-- 解析热流和温度剖面，估算热导率。
+- 解析分子内热流自相关结果，估算热导率。
 - 建立按低热导优先排序的候选数据库。
 
 ## 目录结构
@@ -65,16 +65,18 @@ LAMMPS_MCTS/
 
 ## 环境准备
 
-推荐使用已经配置好的 conda 环境：
+推荐使用 conda 环境运行。环境名称可以自定义，下面以 `polymer_mcts` 为例：
 
 ```powershell
+conda create -n polymer_mcts python=3.11
 conda activate polymer_mcts
+pip install -r requirements.txt
 ```
 
-如果当前终端不能正常激活 conda，也可以直接使用环境里的 Python：
+如果当前终端不能正常激活 conda，也可以使用 `conda run`：
 
 ```powershell
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe main.py
+conda run -n polymer_mcts python main.py
 ```
 
 Python 依赖写在 `requirements.txt`：
@@ -89,14 +91,24 @@ pyyaml
 - Packmol：用于生成多链初始体系。
 - LAMMPS：用于运行快速热导率计算。
 
-当前配置中的路径为：
+Packmol 和 LAMMPS 的可执行文件路径需要按本机安装位置写入 `config.yaml`。如果已经加入系统 `PATH`，可以直接写命令名：
 
 ```yaml
 system:
-  packmol_executable: C:/DuskORI/Application/miniconda/envs/polymer_mcts/Scripts/packmol.exe
+  packmol_executable: packmol
 
 lammps:
-  executable: C:/DuskORI/Application/LAMMPS/bin/lmp.exe
+  executable: lmp
+```
+
+如果没有加入 `PATH`，请改成本机绝对路径，例如：
+
+```yaml
+system:
+  packmol_executable: /path/to/packmol
+
+lammps:
+  executable: /path/to/lmp
 ```
 
 ## 快速启动
@@ -104,13 +116,14 @@ lammps:
 进入项目目录：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
+cd LAMMPS_MCTS
 ```
 
 运行主程序：
 
 ```powershell
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe main.py
+conda activate polymer_mcts
+python main.py
 ```
 
 默认流程会执行：
@@ -137,8 +150,9 @@ frontend/
 启动本地前端：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe web_server.py
+cd LAMMPS_MCTS
+conda activate polymer_mcts
+python web_server.py
 ```
 
 浏览器打开：
@@ -152,11 +166,16 @@ http://localhost:8010/frontend/
 - 新手向运行页。
 - DP、迭代次数、候选数量、最大片段步数修改。
 - 已有有向图/片段空间选择。
+- 内置家族与自定义片段空间互斥；选择聚酰亚胺时不会加载 `CUSTOM_*` 片段。
 - 自定义有向图创建。
 - 一键运行完整流程。
 - 当前运行阶段显示。
+- 按“第 N / 总轮数”显示循环进度，并在每次评价后即时更新实时 Top K。
+- Green-Kubo 提供“快速筛选”和“标准复核”两档；快速档用于 MCTS，标准档用于最终候选复算。
+- 前端可单独设置 LAMMPS 超时秒数；`0` 表示不限制运行时间。
 - MCTS 候选序列和低热导数据库查看。
 - 热导率结果表。
+- 候选序列选择性清除。
 - API 生成化合物片段配置。
 - 主程序、前端服务器和 LAMMPS 命令复制。
 - 项目内原创 Logo、聚合物流程图和功能图标。
@@ -176,13 +195,14 @@ http://localhost:8010/frontend/
 1. 打开 PowerShell，进入项目目录：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
+cd LAMMPS_MCTS
 ```
 
 2. 启动本地服务：
 
 ```powershell
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe web_server.py
+conda activate polymer_mcts
+python web_server.py
 ```
 
 3. 在浏览器访问：
@@ -193,11 +213,11 @@ http://localhost:8010/frontend/
 
 4. 在“运行”页面设置参数：
 
-- `聚合度 DP`：控制候选聚合物片段序列重复次数，当前默认 DP=10。
+- `目标链长`：默认 `120 Å`。程序根据每个候选重复单元的化学键轮廓长度自动计算聚合度。
 - `MCTS 迭代次数`：控制搜索次数，数值越大搜索越充分，耗时也越长。
 - `输出候选数`：控制最终保留多少个候选结构。
-- `最大片段步数`：控制一次候选序列中片段节点的最大数量。
-- `选择已有有向图/片段空间`：可以选择全部内置、聚酰亚胺、聚氨酯、酚醛树脂或自定义片段。
+- `重复单元最大片段数`：控制一个候选重复单元中的真实片段数量，`Start` 和 `End` 不计数。
+- `选择已有有向图/片段空间`：每次选择聚酰亚胺、聚氨酯、酚醛树脂中的一个，或者使用自定义片段。
 - `自动运行 LAMMPS`：勾选后会在生成输入文件后尝试直接调用 LAMMPS。
 - `热导结果反馈 MCTS`：勾选后使用热导率结果作为搜索反馈，计算成本更高。
 
@@ -211,23 +231,26 @@ MCTS 搜索 -> RDKit 建链 -> Packmol 初始体系 -> 写出 LAMMPS 输入 -> �
 
 7. 运行结束后，在“数据库”页面查看候选序列和热导率结果。低热导数据库会优先展示热导率较低的候选。
 
+8. 如果需要清理候选序列，可以进入“数据库”页面，勾选候选行后点击“清除选中”。也可以点击“清空候选”清除全部候选序列。清除前程序会自动把原始 CSV 备份到 `outputs/archive/`。
+
 ### 方式二：命令行运行
 
 命令行方式适合不打开前端时使用：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe main.py
+cd LAMMPS_MCTS
+conda activate polymer_mcts
+python main.py
 ```
 
 命令行运行会读取 `config.yaml`，然后自动完成搜索、建链、装盒、LAMMPS 输入生成和结果整理。是否自动运行 LAMMPS 由配置项控制：
 
 ```yaml
-lammps:
-  run_enabled: false
+mcts:
+  feedback_run_lammps: true
 ```
 
-如果只想快速生成候选结构和 LAMMPS 输入文件，可以保持 `run_enabled: false`。如果本机 LAMMPS 路径已经配置正确，可以改为 `true`。
+如果只想快速检查片段搜索和结构导出，可以临时改为 `feedback_run_lammps: false`。如果本机 LAMMPS 路径已经配置正确，保持 `true` 即可在 MCTS 搜索阶段用热导率反馈 reward。
 
 ### 修改搜索参数
 
@@ -236,22 +259,27 @@ lammps:
 ```yaml
 mcts:
   iterations: 300
-  max_steps: 6
+  max_steps: 5
   top_k: 5
-  feedback_mode: heuristic
+  feedback_mode: thermal
+  feedback_every_iteration: true
+  feedback_max_evaluations: 50
+  feedback_run_lammps: true
 
 polymer:
-  degree_of_polymerization: 10
+  target_chain_length_angstrom: 120.0
+  min_degree_of_polymerization: 1
+  max_degree_of_polymerization: 100
 ```
 
 建议调参顺序：
 
 1. 初次测试时使用较小的 `iterations`，例如 20 到 50。
 2. 确认 RDKit、Packmol 和 LAMMPS 输入生成正常后，再提高到 300 或更高。
-3. 如果候选序列过短，可以提高 `max_steps`。
-4. 如果需要更长聚合物链，可以提高 `degree_of_polymerization`。
-5. 如果只是快速筛选，优先使用 `feedback_mode: heuristic`。
-6. 如果要把热导率计算结果反馈给 MCTS，再使用 `feedback_mode: thermal`。
+3. 如果候选重复单元过短，可以提高 `max_steps`，达到上限后程序会自动补上 `End`。
+4. 如果需要更长聚合物链，可以提高 `target_chain_length_angstrom`；实际 DP 会随候选重复单元自动变化。
+5. 当前默认使用 `feedback_mode: thermal`，热导率结果会在 MCTS 每轮评价后回传到节点。
+6. 如果只想快速调试流程，可以临时改成 `feedback_mode: heuristic`。
 
 ### 选择和创建有向图
 
@@ -292,21 +320,31 @@ polymer:
 
 生成结果应包含 `fragments` 和 `transitions` 两部分。建议生成后先人工检查 SMILES 和连接关系，再下载为 `ai_fragments.json` 或复制到自定义片段文件中。
 
-### 运行热导率计算
+### 热导率反馈
 
-项目会先生成快速热导率 LAMMPS 输入文件，例如：
+当前主流程把热导率计算放在 MCTS 搜索阶段。配置为：
+
+```yaml
+mcts:
+  feedback_mode: thermal
+  feedback_run_lammps: true
+```
+
+时，每一轮 MCTS rollout 会生成候选序列，调用 LAMMPS 快速热导脚本，读取热导率并转换为 reward 回传到节点。
+
+搜索结束后，程序只会对最终 top_k 候选导出结构和 LAMMPS 输入文件，例如：
 
 ```text
-outputs/lammps/candidate_001_fast_tc.in
+outputs/lammps/candidate_001_rapid_gk.in
 ```
 
-手动运行某个候选：
+需要人工复查时，可以手动运行某个导出的候选：
 
 ```powershell
-C:\DuskORI\Application\LAMMPS\bin\lmp.exe -in outputs\lammps\candidate_001_fast_tc.in
+lmp -in outputs/lammps/candidate_001_rapid_gk.in
 ```
 
-当前快速热导率脚本用于初筛和流程验证。脚本默认忽略分子间非键作用，适合快速比较候选，不适合直接作为最终物性结论。若要获得更可靠的热导率，需要补充真实力场、结构弛豫、平衡过程和多次重复采样。
+快速 Green-Kubo 脚本保留分子间相互作用，只省略不同分子热流之间的交叉相关项。输入 data 必须包含真实的 Pair、Bond、Angle、Dihedral 等力场系数；缺少所需系数时程序会停止该次热导评价并记录原因，不会再使用零作用力结果。
 
 ### 查看结果
 
@@ -315,19 +353,21 @@ C:\DuskORI\Application\LAMMPS\bin\lmp.exe -in outputs\lammps\candidate_001_fast_
 - `outputs/candidates.csv`：MCTS 搜索到的候选片段序列。
 - `outputs/build_results.csv`：RDKit 建链结果和 PDB 路径。
 - `outputs/system_results.csv`：Packmol 初始体系和 LAMMPS data 结果。
-- `outputs/thermal_inputs.csv`：快速热导率 LAMMPS 输入脚本路径。
-- `outputs/thermal_results.csv`：热流、温度梯度和热导率估算。
-- `outputs/low_k_database.csv`：按低热导优先排序的候选数据库。
+- `outputs/thermal_inputs.csv`：最终 top_k 候选的 LAMMPS 输入脚本路径。
+- `outputs/feedback_records.csv`：MCTS 搜索阶段的热导率反馈记录。
+- `outputs/low_k_database.csv`：按搜索阶段 reward 排序的低热导候选数据库。
 
 如果只关心最终低热导候选，优先查看 `outputs/low_k_database.csv`。如果要排查流程问题，则按上述文件顺序逐步检查。
+
+前端支持清除候选序列。清除操作只重写对应 CSV 表格，不删除 `outputs/pdb/`、`outputs/systems/` 或 `outputs/lammps/` 中已经生成的结构和输入文件。需要彻底清理结构文件时，建议先手动备份再处理。
 
 ### 常见问题
 
 - 前端打不开：确认 `web_server.py` 是否正在运行，端口是否为 `8010`。
 - RDKit 报错：确认当前环境为 `polymer_mcts`，并且已安装 RDKit。
 - Packmol 失败：可以适当增大 `system.box_size` 或降低 `system.molecule_count`。
-- LAMMPS 没有运行：确认 `lammps.executable` 路径正确，并将 `lammps.run_enabled` 改为 `true`。
-- 没有热导率结果：先检查 `outputs/thermal_inputs.csv` 是否生成，再检查 LAMMPS 是否成功输出 `flux.profile` 和 `temp.profile`。
+- LAMMPS 没有运行：确认 `lammps.executable` 路径正确，并将 `mcts.feedback_run_lammps` 改为 `true`。
+- 没有热导率结果：先检查 `outputs/feedback_records.csv` 中是否提示缺少力场系数，再检查 LAMMPS 是否输出 `*_intra_hfacf.dat` 和 `*_kappa.dat`。
 - AI 片段不可用：确认 API key、API URL、模型名称和返回 JSON 格式是否正确。
 
 ## 主要配置
@@ -337,26 +377,34 @@ C:\DuskORI\Application\LAMMPS\bin\lmp.exe -in outputs\lammps\candidate_001_fast_
 ```yaml
 mcts:
   iterations: 300
-  max_steps: 6
+  max_steps: 5
   start_fragment: Start
   top_k: 5
   exploration_weight: 1.41421356237
   rollout_limit: 32
   random_seed: 7
-  feedback_mode: heuristic
+  feedback_mode: thermal
+  feedback_every_iteration: true
+  feedback_max_evaluations: 50
+  feedback_run_lammps: true
 
 polymer:
-  degree_of_polymerization: 10
+  target_chain_length_angstrom: 120.0
+  min_degree_of_polymerization: 1
+  max_degree_of_polymerization: 100
   build_pdb: true
 ```
 
 其中：
 
 - `iterations`：MCTS 搜索迭代次数。
-- `max_steps`：片段序列最大长度，不是聚合度。
+- `max_steps`：一个重复单元允许的最大真实片段数，不包含 `Start` 和 `End`，也不是聚合度。
 - `start_fragment`：搜索起点，当前为 `Start`。
 - `top_k`：输出候选数量。
-- `degree_of_polymerization`：聚合度。比如序列 `A-B` 且 DP=10，表示 `A-B` 重复 10 次。
+- `target_chain_length_angstrom`：目标链轮廓长度，默认 `120 Å`。
+- `min_degree_of_polymerization`、`max_degree_of_polymerization`：自动计算 DP 的上下限，用于防止异常短或异常长的结构。
+
+程序先沿 `[1*]` 到 `[2*]` 之间的最短化学键路径计算重复单元轮廓长度，键长优先采用 RDKit UFF 平衡键长。随后选择使整条链最接近目标长度的整数 DP。`build_results.csv` 会保存实际 DP、重复单元长度和估算链长，便于人工复核。这里的 `120 Å` 指化学键路径的轮廓长度，不是折叠构象两端的空间直线距离。
 
 ## MCTS 与低热导目标
 
@@ -369,7 +417,7 @@ UCB = 平均奖励项 + 探索项
 程序中的奖励值被设计为低热导优先。对于真实或估计热导率 `kappa`，反馈奖励可写成：
 
 ```text
-reward = 1 / (kappa + offset)
+reward = 1 / (1 + kappa / reward_scale)
 ```
 
 因此：
@@ -382,18 +430,22 @@ reward = 1 / (kappa + offset)
 
 ```yaml
 mcts:
-  feedback_mode: heuristic
-```
-
-`heuristic` 使用片段结构特征进行快速估计，适合大规模初筛。
-
-```yaml
-mcts:
   feedback_mode: thermal
+  feedback_every_iteration: true
+  feedback_max_evaluations: 50
   feedback_run_lammps: true
 ```
 
-`thermal` 会在 MCTS 过程中把快速热导率计算结果反馈到节点。该模式计算成本较高，建议先用较小的 `feedback_max_evaluations` 测试。
+`thermal` 会在 MCTS 过程中把快速热导率计算结果反馈到节点。`feedback_every_iteration: true` 时，程序会让热导反馈次数至少等于 `iterations`，即每一轮 MCTS 都有热导 reward 参与回传。若同一条序列已经算过，程序会直接使用缓存结果，不会重复运行同一条序列。
+
+如果只想快速检查流程，可以临时使用：
+
+```yaml
+mcts:
+  feedback_mode: heuristic
+```
+
+`heuristic` 使用片段结构特征进行快速估计，不调用 LAMMPS，适合调试和大规模预筛。
 
 ## 聚合物片段库
 
@@ -408,7 +460,7 @@ mcts:
 
 ```yaml
 chemistry:
-  active_families: polyimide,polyurethane,phenolic
+  active_families: polyimide
   custom_fragment_file: custom_fragments.json
   allow_custom_self_transitions: true
 ```
@@ -534,25 +586,30 @@ outputs/systems/candidate_001_system.data
 默认写出：
 
 ```text
-outputs/lammps/candidate_001_fast_tc.in
+outputs/lammps/candidate_001_rapid_gk.in
 ```
 
 手动运行：
 
 ```powershell
-C:\DuskORI\Application\LAMMPS\bin\lmp.exe -in outputs\lammps\candidate_001_fast_tc.in
+lmp -in outputs/lammps/candidate_001_rapid_gk.in
 ```
 
-自动运行：
+自动反馈：
 
 ```yaml
-lammps:
-  run_enabled: true
+mcts:
+  feedback_mode: thermal
+  feedback_run_lammps: true
 ```
 
-快速热导率脚本使用 NEMD 思路，设置 hot/cold 区域，输出热流和温度剖面。
+快速热导率脚本使用平衡态 Green-Kubo 思路。程序按 molecule ID 分别计算热流，通过 `fix ave/correlate ... type auto` 累加每个分子三个方向的自相关，从而省略不同分子热流之间的交叉相关项。LAMMPS 动力学中的分子间非键作用仍然保留。
 
-当前快速脚本主要用于流程验证和候选初筛。由于自动生成的 data 文件尚未包含完整真实力场，脚本默认使用 `pair_style zero` 并忽略分子间非键相互作用。若要做严格物理结论，需要后续接入真实力场参数、充分弛豫和重复采样。
+默认的 `system.force_field: uff_screening` 会从 RDKit MOL 文件读取键级，计算 Gasteiger 电荷，并写入 UFF 的非键、键、键角和二面角参数。Packmol 只负责多链装箱，随后程序把这些参数和装箱坐标组合成可直接读取的 LAMMPS data。若选择 `topology_only`，或 data 缺少必要的 `Pair Coeffs`、`Bond Coeffs` 等段，热导评价会明确停止，不会生成零作用力的伪结果。
+
+UFF 路径用于快速筛选和程序联调，不等同于论文采用的 GAFF 参数化，也不应直接作为定量热导率结论。正式计算建议接入 GAFF/AM1-BCC 或经过验证的聚合物力场，并增加平衡时间、生产步数和独立重复轨迹。
+
+当前暂不执行聚合物家族官能团检查。内置和自定义候选只受片段有向图、最大片段数及 RDKit 结构解析约束，正式研究前需要人工筛除不符合反应与合成规则的重复单元。
 
 ## 输出文件
 
@@ -569,8 +626,6 @@ outputs/candidates.csv
 outputs/build_results.csv
 outputs/system_results.csv
 outputs/thermal_inputs.csv
-outputs/lammps_runs.csv
-outputs/thermal_results.csv
 outputs/low_k_database.csv
 outputs/feedback_records.csv
 outputs/candidate_notes.txt
@@ -581,25 +636,24 @@ outputs/candidate_notes.txt
 - `candidates.csv`：MCTS 候选序列、访问次数、平均奖励和结构特征。
 - `build_results.csv`：RDKit 建链结果、SMILES 和 PDB 路径。
 - `system_results.csv`：Packmol 初始体系和 LAMMPS data 结果。
-- `thermal_inputs.csv`：快速热导率 LAMMPS 输入脚本路径。
-- `lammps_runs.csv`：LAMMPS 运行记录。
-- `thermal_results.csv`：热流、温度梯度和热导率估算。
-- `low_k_database.csv`：按低热导优先排序的候选数据库。
-- `feedback_records.csv`：MCTS 热导反馈记录。
+- `thermal_inputs.csv`：最终 top_k 候选的 LAMMPS 输入脚本路径。
+- `low_k_database.csv`：按搜索阶段 reward 排序的低热导候选数据库。
+- `feedback_records.csv`：MCTS 搜索阶段的热导反馈记录。
 
 ## 典型运行命令
 
 只生成结构和 LAMMPS 输入：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe main.py
+cd LAMMPS_MCTS
+conda activate polymer_mcts
+python main.py
 ```
 
 手动跑某个候选热导率：
 
 ```powershell
-C:\DuskORI\Application\LAMMPS\bin\lmp.exe -in outputs\lammps\candidate_001_fast_tc.in
+lmp -in outputs/lammps/candidate_001_rapid_gk.in
 ```
 
 ## 当前注意事项

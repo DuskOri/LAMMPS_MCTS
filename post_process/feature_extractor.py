@@ -57,11 +57,6 @@ def extract_sequence_features(sequence):
     }
 
 
-def batch_extract_features(sequences):
-    """批量提取特征，用于候选列表统一写出。"""
-    return [extract_sequence_features(sequence) for sequence in sequences]
-
-
 def _safe_divide(numerator, denominator):
     """避免空序列造成除零错误。"""
     if denominator == 0:

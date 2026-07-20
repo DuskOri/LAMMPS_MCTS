@@ -9,17 +9,15 @@ except ImportError:
     yaml = None
 
 from generator import build_polymer_from_sequence, prepare_initial_system
-from md_engine import run_lammps_input, write_fast_tc_input
+from md_engine import write_rapid_gk_input
 from mcts import MCTSEngine, ThermalFeedbackEvaluator, configure_fragment_registry
 from mcts.ai_fragment_api import generate_ai_fragment_file
 from post_process import (
-    analyze_thermal_outputs,
     write_build_results_csv,
     write_candidates_csv,
-    write_lammps_run_results_csv,
     write_mcts_feedback_records_csv,
+    write_search_low_k_database_csv,
     write_system_results_csv,
-    write_thermal_analysis_results_csv,
     write_thermal_input_results_csv,
 )
 from post_process.explain_model import summarize_candidates
@@ -30,23 +28,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 DEFAULT_CONFIG = {
     "mcts": {
-        "iterations": 300,
-        "max_steps": 6,
+        "iterations": 50,
+        "max_steps": 5,
         "start_fragment": "Start",
         "top_k": 5,
         "exploration_weight": 1.41421356237,
         "rollout_limit": 32,
         "random_seed": 7,
-        "feedback_mode": "heuristic",
-        "feedback_max_evaluations": 10,
+        "feedback_mode": "thermal",
+        "feedback_every_iteration": True,
+        "feedback_max_evaluations": 50,
         "feedback_output_dir": "outputs/mcts_feedback",
-        "feedback_run_lammps": False,
-        "feedback_reward_offset": 0.05,
-        "feedback_fallback_to_heuristic": True,
+        "feedback_run_lammps": True,
+        "feedback_reward_scale": 0.20,
+        "feedback_fallback_to_heuristic": False,
         "feedback_failure_reward": -1.0,
     },
     "chemistry": {
-        "active_families": ["polyimide", "polyurethane", "phenolic"],
+        "active_families": ["polyimide"],
         "custom_fragment_file": "custom_fragments.json",
         "ai_enabled": False,
         "ai_api_url": "https://api.openai.com/v1/chat/completions",
@@ -64,34 +63,51 @@ DEFAULT_CONFIG = {
         "allow_custom_self_transitions": True,
     },
     "polymer": {
-        "degree_of_polymerization": 10,
+        "target_chain_length_angstrom": 120.0,
+        "min_degree_of_polymerization": 1,
+        "max_degree_of_polymerization": 100,
         "build_pdb": True,
     },
     "system": {
         "prepare_initial_system": True,
-        "molecule_count": 10,
-        "box_size": 60.0,
+        "molecule_count": 4,
+        "box_size": 45.0,
         "tolerance": 2.0,
         "packmol_executable": "packmol",
+        "force_field": "uff_screening",
     },
     "thermal_conductivity": {
+        "profile": "quick",
         "write_fast_input": True,
+        "method": "rapid_green_kubo",
         "temperature": 300.0,
-        "hot_temperature": 450.0,
-        "cold_temperature": 150.0,
+        "pressure": 1.0,
         "timestep": 0.5,
         "tdamp": 50.0,
+        "pdamp": 500.0,
         "cutoff": 12.0,
-        "equil_steps": 5000,
-        "gradient_steps": 20000,
+        "nvt_steps": 2000,
+        "npt_steps": 8000,
+        "production_steps": 30000,
+        "sample_nevery": 10,
+        "correlation_samples": 300,
+        "thermo_every": 500,
         "dump_every": 5000,
+        "random_seed": 87287,
+        "pair_style": "lj/cut/coul/long 12.0",
+        "bond_style": "harmonic",
+        "angle_style": "harmonic",
+        "dihedral_style": "harmonic",
+        "improper_style": "cvff",
+        "kspace_style": "pppm 1.0e-4",
+        "special_bonds": "amber",
+        "force_field_include": "",
         "analyze_outputs": True,
         "trim_fraction": 0.20,
     },
     "lammps": {
-        "run_enabled": False,
         "executable": "lmp",
-        "timeout_seconds": 120,
+        "timeout_seconds": 1800,
     },
     "output": {
         "directory": "outputs",
@@ -99,10 +115,9 @@ DEFAULT_CONFIG = {
         "build_results_csv": "build_results.csv",
         "system_results_csv": "system_results.csv",
         "thermal_inputs_csv": "thermal_inputs.csv",
-        "lammps_runs_csv": "lammps_runs.csv",
-        "thermal_results_csv": "thermal_results.csv",
         "low_k_database_csv": "low_k_database.csv",
         "feedback_records_csv": "feedback_records.csv",
+        "export_final_structures": True,
     },
 }
 
@@ -125,22 +140,24 @@ def load_config(filename="config.yaml"):
     return _merge_config(DEFAULT_CONFIG, user_config)
 
 
-def run_search(config):
-    """运行 MCTS 搜索，返回按分数排序的候选序列。"""
+def run_search(config, progress_callback=None):
+    """运行 MCTS 搜索；thermal 模式下每轮用热导率作为 reward。"""
     configure_chemistry(config)
     mcts_config = config["mcts"]
     reward_fn = None
     feedback_records = []
 
     if mcts_config.get("feedback_mode", "heuristic") == "thermal":
+        max_evaluations = _resolve_feedback_max_evaluations(mcts_config)
         evaluator = ThermalFeedbackEvaluator(
             config=config,
             output_dir=mcts_config["feedback_output_dir"],
-            max_evaluations=mcts_config["feedback_max_evaluations"],
+            max_evaluations=max_evaluations,
             run_lammps=mcts_config["feedback_run_lammps"],
-            reward_offset=mcts_config["feedback_reward_offset"],
+            reward_scale=mcts_config["feedback_reward_scale"],
             fallback_to_heuristic=mcts_config["feedback_fallback_to_heuristic"],
             failure_reward=mcts_config["feedback_failure_reward"],
+            progress_callback=progress_callback,
         )
         reward_fn = evaluator
     else:
@@ -153,6 +170,7 @@ def run_search(config):
         rollout_limit=mcts_config["rollout_limit"],
         reward_fn=reward_fn,
         random_seed=mcts_config.get("random_seed"),
+        progress_callback=progress_callback,
     )
     candidates = engine.ranked_candidates(
         iterations=mcts_config["iterations"],
@@ -163,8 +181,26 @@ def run_search(config):
     return candidates, feedback_records
 
 
+def _resolve_feedback_max_evaluations(mcts_config):
+    """确定本次搜索允许多少次热导反馈评价。"""
+    iterations = int(mcts_config.get("iterations", 0) or 0)
+    configured = mcts_config.get("feedback_max_evaluations")
+    every_iteration = _as_config_bool(mcts_config.get("feedback_every_iteration", False))
+
+    if configured in ("", None):
+        configured_limit = 0
+    else:
+        configured_limit = int(configured)
+
+    if every_iteration:
+        return max(iterations, configured_limit)
+    if configured_limit <= 0:
+        return None
+    return configured_limit
+
+
 def build_candidates(candidates, config):
-    """对候选序列调用 RDKit 建模，LAMMPS 模拟暂不在这里执行。"""
+    """对最终 top_k 候选调用 RDKit 建模，用于导出结构文件。"""
     polymer_config = config["polymer"]
     output_dir = Path(config["output"]["directory"]) / "pdb"
 
@@ -175,7 +211,9 @@ def build_candidates(candidates, config):
     for index, candidate in enumerate(candidates, start=1):
         result = build_polymer_from_sequence(
             candidate["sequence"],
-            dp=polymer_config["degree_of_polymerization"],
+            target_length_angstrom=polymer_config["target_chain_length_angstrom"],
+            min_dp=polymer_config["min_degree_of_polymerization"],
+            max_dp=polymer_config["max_degree_of_polymerization"],
             output_dir=output_dir,
             name=f"candidate_{index:03d}",
         )
@@ -203,6 +241,8 @@ def prepare_systems(build_results, config):
             box_size=system_config["box_size"],
             tolerance=system_config["tolerance"],
             packmol_executable=system_config["packmol_executable"],
+            template_mol=result.mol_path,
+            force_field=system_config.get("force_field", "uff_screening"),
         )
         results.append(system_result)
 
@@ -220,7 +260,7 @@ def write_thermal_inputs(system_results, config):
     params = {
         key: value
         for key, value in tc_config.items()
-        if key != "write_fast_input"
+        if key not in ("write_fast_input", "profile")
     }
 
     results = []
@@ -229,9 +269,10 @@ def write_thermal_inputs(system_results, config):
             continue
 
         stem = Path(system_result.system_data_path).stem.replace("_system", "")
-        input_file = output_dir / f"{stem}_fast_tc.in"
+        input_file = output_dir / f"{stem}_rapid_gk.in"
         output_prefix = output_dir / stem
-        result = write_fast_tc_input(
+        params["molecule_count"] = system_result.molecule_count
+        result = write_rapid_gk_input(
             data_file=system_result.system_data_path,
             input_file=input_file,
             output_prefix=output_prefix,
@@ -242,53 +283,12 @@ def write_thermal_inputs(system_results, config):
     return results
 
 
-def run_lammps_jobs(thermal_input_results, config):
-    """按配置执行 LAMMPS 快速热导率脚本。"""
-    lammps_config = config["lammps"]
-    if not lammps_config.get("run_enabled", False):
-        return []
-
-    results = []
-    for result in thermal_input_results:
-        if not result.success:
-            continue
-        run_result = run_lammps_input(
-            input_path=result.input_path,
-            lammps_executable=lammps_config["executable"],
-            timeout=lammps_config.get("timeout_seconds"),
-        )
-        results.append(run_result)
-    return results
-
-
-def analyze_thermal_results(thermal_input_results, config):
-    """解析热流和温度剖面，估算快速热导率。"""
-    tc_config = config["thermal_conductivity"]
-    if not tc_config.get("analyze_outputs", True):
-        return []
-
-    results = []
-    for result in thermal_input_results:
-        if not result.success:
-            continue
-        analysis = analyze_thermal_outputs(
-            input_path=result.input_path,
-            flux_path=result.flux_output,
-            temp_path=result.temp_output,
-            trim_fraction=tc_config.get("trim_fraction", 0.20),
-        )
-        results.append(analysis)
-    return results
-
-
 def save_outputs(
     candidates,
     feedback_records,
     build_results,
     system_results,
     thermal_input_results,
-    lammps_run_results,
-    thermal_analysis_results,
     config,
 ):
     """保存候选序列、结构生成结果和解释信息。"""
@@ -312,16 +312,9 @@ def save_outputs(
         thermal_input_results,
         output_dir / config["output"]["thermal_inputs_csv"],
     )
-    write_lammps_run_results_csv(
-        lammps_run_results,
-        output_dir / config["output"]["lammps_runs_csv"],
-    )
-    write_thermal_analysis_results_csv(
-        thermal_analysis_results,
-        output_dir / config["output"]["thermal_results_csv"],
-    )
-    write_thermal_analysis_results_csv(
-        thermal_analysis_results,
+    write_search_low_k_database_csv(
+        candidates,
+        feedback_records,
         output_dir / config["output"]["low_k_database_csv"],
     )
     _write_explain_text(summarize_candidates(candidates), output_dir / "candidate_notes.txt")
@@ -454,22 +447,23 @@ def _parse_config_value(value):
 
 
 def main():
-    """执行完整的非 LAMMPS 流程。"""
+    """执行低热导聚合物搜索，并导出最终 top_k 候选结果。"""
     config = load_config()
     candidates, feedback_records = run_search(config)
-    build_results = build_candidates(candidates, config)
-    system_results = prepare_systems(build_results, config)
-    thermal_input_results = write_thermal_inputs(system_results, config)
-    lammps_run_results = run_lammps_jobs(thermal_input_results, config)
-    thermal_analysis_results = analyze_thermal_results(thermal_input_results, config)
+    if config["output"].get("export_final_structures", True):
+        build_results = build_candidates(candidates, config)
+        system_results = prepare_systems(build_results, config)
+        thermal_input_results = write_thermal_inputs(system_results, config)
+    else:
+        build_results = []
+        system_results = []
+        thermal_input_results = []
     save_outputs(
         candidates,
         feedback_records,
         build_results,
         system_results,
         thermal_input_results,
-        lammps_run_results,
-        thermal_analysis_results,
         config,
     )
 
@@ -478,8 +472,6 @@ def main():
     print(f"结构生成数量: {len(build_results)}")
     print(f"初始体系数量: {len(system_results)}")
     print(f"热导率输入脚本数量: {len(thermal_input_results)}")
-    print(f"LAMMPS运行数量: {len(lammps_run_results)}")
-    print(f"热导率结果数量: {len(thermal_analysis_results)}")
     print(f"结果目录: {config['output']['directory']}")
 
 

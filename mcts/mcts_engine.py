@@ -47,12 +47,13 @@ class MCTSEngine:
 
     def __init__(
         self,
-        max_steps=8,
+        max_steps=5,
         start_fragment="Start",
         exploration_weight=1.41421356237,
         rollout_limit=32,
         reward_fn=None,
         random_seed=None,
+        progress_callback=None,
     ):
         self.max_steps = max_steps
         self.start_fragment = start_fragment
@@ -60,38 +61,29 @@ class MCTSEngine:
         self.rollout_limit = rollout_limit
         self.reward_fn = reward_fn or default_reward
         self.reward_cache = {}
+        self.evaluated_candidates = {}
+        self.progress_callback = progress_callback
+        self.current_iteration = 0
+        self.total_iterations = 0
         if random_seed is not None:
             random.seed(random_seed)
 
-    def search(self, iterations=200):
-        """运行 MCTS，并返回一条访问次数较稳定的片段序列。"""
-        root = MCTSNode(
-            PolymerState(sequence=(self.start_fragment,), max_steps=self.max_steps)
-        )
-
-        for _ in range(iterations):
-            node = self._select(root)
-            reward = self._simulate(node.state)
-            node.backpropagate(reward)
-
-        best_child = root.most_visited_child()
-        if best_child is None:
-            return root.state.to_mcts_output()
-        return self._best_terminal_sequence(best_child)
-
     def ranked_candidates(self, iterations=200, top_k=5):
         """返回若干条候选序列，便于后续批量建模和筛选。"""
+        self.evaluated_candidates = {}
         root = MCTSNode(
             PolymerState(sequence=(self.start_fragment,), max_steps=self.max_steps)
         )
 
-        for _ in range(iterations):
+        self.total_iterations = int(iterations)
+        for iteration in range(1, self.total_iterations + 1):
+            self.current_iteration = iteration
+            self._notify_iteration()
             node = self._select(root)
             reward = self._simulate(node.state)
             node.backpropagate(reward)
 
-        candidates = []
-        self._collect_candidates(root, candidates)
+        candidates = self._rank_evaluated_candidates()
         candidates.sort(key=lambda item: item["score"], reverse=True)
         return candidates[:top_k]
 
@@ -115,39 +107,81 @@ class MCTSEngine:
             rollout_state = rollout_state.take_action(random.choice(actions))
         return self._evaluate_sequence(rollout_state.to_mcts_output())
 
-    def _best_terminal_sequence(self, node):
-        """从给定节点继续选择访问次数最多的路径。"""
-        current = node
-        while current.children:
-            current = current.most_visited_child()
-        return current.state.to_mcts_output()
-
-    def _collect_candidates(self, node, candidates):
-        """遍历树，把已经访问过的片段路径整理成候选结果。"""
-        if node.visits > 0 and node.state.current_fragment != "Start":
-            sequence = node.state.to_mcts_output()
-            candidates.append(
-                {
-                    "sequence": sequence,
-                    "score": node.average_reward,
-                    "visits": node.visits,
-                    "average_reward": node.average_reward,
-                }
-            )
-
-        for child in node.children:
-            self._collect_candidates(child, candidates)
-
     def _evaluate_sequence(self, sequence):
         """计算序列分数，并缓存已经评估过的序列。"""
         key = tuple(sequence)
         if key not in self.reward_cache:
             self.reward_cache[key] = self.reward_fn(sequence)
+        self._record_evaluated_sequence(key, self.reward_cache[key])
         return self.reward_cache[key]
+
+    def _record_evaluated_sequence(self, key, reward):
+        """记录 rollout 中真正计算过 reward 的完整序列。"""
+        item = self.evaluated_candidates.get(key)
+        if item is None:
+            item = {
+                "sequence": list(key),
+                "score": reward,
+                "visits": 1,
+                "average_reward": reward,
+                "total_reward": reward,
+            }
+            self.evaluated_candidates[key] = item
+        else:
+            item["visits"] += 1
+            item["total_reward"] += reward
+            item["average_reward"] = item["total_reward"] / item["visits"]
+            item["score"] = item["average_reward"]
+
+        self._notify(
+            "candidate",
+            f"candidate evaluated at iteration {self.current_iteration}",
+            {
+                "iteration": self.current_iteration,
+                "total_iterations": self.total_iterations,
+                "candidate": {
+                    "sequence": list(item["sequence"]),
+                    "score": item["score"],
+                    "visits": item["visits"],
+                    "average_reward": item["average_reward"],
+                },
+            },
+        )
+
+    def _notify_iteration(self):
+        """向界面报告当前 MCTS 循环次数。"""
+        self._notify(
+            "search",
+            f"MCTS 第 {self.current_iteration}/{self.total_iterations} 轮：正在选择并扩展节点",
+            {
+                "iteration": self.current_iteration,
+                "total_iterations": self.total_iterations,
+            },
+        )
+
+    def _notify(self, event, message, details=None):
+        """发送搜索进度，同时兼容旧的双参数回调。"""
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(event, message, details or {})
+        except TypeError:
+            self.progress_callback(event, message)
+
+    def _rank_evaluated_candidates(self):
+        """把搜索阶段实际评价过的序列整理成候选列表。"""
+        return [
+            {
+                "sequence": list(item["sequence"]),
+                "score": item["score"],
+                "visits": item["visits"],
+                "average_reward": item["average_reward"],
+            }
+            for item in self.evaluated_candidates.values()
+        ]
 
 
 if __name__ == "__main__":
-    engine = MCTSEngine(max_steps=6, random_seed=7)
-    print(engine.search(iterations=100))
+    engine = MCTSEngine(max_steps=5, random_seed=7)
     for candidate in engine.ranked_candidates(iterations=100, top_k=3):
         print(candidate)
