@@ -53,7 +53,7 @@ const stageText = {
   packmol: "Packmol 初始体系",
   write_lammps: "写出 LAMMPS 输入",
   compress: "高温熔融与体系压缩",
-  run_lammps: "Green-Kubo 计算",
+  run_lammps: "NEMD 热导计算",
   mcts_lammps: "热导 reward 回传",
   export: "导出最终 Top K",
   save: "保存数据库",
@@ -1141,6 +1141,6 @@ function renderCommands() {
   ].join("\n");
   document.getElementById("lammpsCommand").textContent = [
     "# 需要先把 LAMMPS 加入 PATH，或在 config.yaml 中配置 lammps.executable",
-    "lmp -in outputs/lammps/candidate_001_rapid_gk.in"
+    "lmp -in outputs/lammps/candidate_001_direct_nemd.in"
   ].join("\n");
 }

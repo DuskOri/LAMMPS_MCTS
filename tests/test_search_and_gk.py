@@ -11,13 +11,20 @@ from generator import (
     resolve_degree_of_polymerization,
 )
 from generator.packmol_runner import _resolve_packmol
-from md_engine import write_rapid_gk_input, write_uff_lammps_data_from_template
+from md_engine import (
+    write_direct_nemd_input,
+    write_rapid_gk_input,
+    write_uff_lammps_data_from_template,
+)
 from md_engine.lammps_runner import _should_stream_line
 from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
 from mcts.state import PolymerState
-from post_process.thermal_analyzer import read_plateau_conductivity
+from post_process.thermal_analyzer import (
+    analyze_direct_nemd_outputs,
+    read_plateau_conductivity,
+)
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -312,6 +319,81 @@ class RapidGreenKuboTests(unittest.TestCase):
             output.write_text("# step kappa\n10 0.10\n20 0.20\n30 0.30\n40 0.40\n", encoding="utf-8")
             value = read_plateau_conductivity(output, tail_fraction=0.50)
             self.assertAlmostEqual(value, 0.35)
+
+
+class DirectNemdTests(unittest.TestCase):
+    def test_writer_keeps_reference_hot_baths_and_central_heat_flux(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "parameterized.data"
+            data_file.write_text(
+                "1 atoms\n1 atom types\n\nPair Coeffs\n\n1 0.1 3.5\n",
+                encoding="utf-8",
+            )
+            result = write_direct_nemd_input(
+                data_file,
+                root / "nemd.in",
+                root / "nemd",
+                params={"nemd_steady_steps": 1000, "production_steps": 2000},
+            )
+
+            self.assertTrue(result.success, result.message)
+            script = (root / "nemd.in").read_text(encoding="utf-8")
+            self.assertIn("fix             fhot all langevin", script)
+            self.assertIn("fix_modify      fhot temp Thot", script)
+            self.assertIn("compute         heat_flux flux heat/flux", script)
+            self.assertIn("compute         layers all chunk/atom bin/1d x", script)
+            self.assertNotIn("thermal/conductivity", script)
+
+    def test_analyzer_uses_heat_flux_over_linear_temperature_gradient(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "temp.profile"
+            flux = root / "flux.profile"
+            rows = ["# profile", "1000 20 1000"]
+            for index in range(20):
+                x = 0.25 + 0.5 * index
+                temperature = 450.0 - 20.0 * x
+                rows.append(f"{index + 1} {x} 50 {temperature}")
+            profile.write_text("\n".join(rows), encoding="utf-8")
+            flux.write_text("# step Jx\n1000 2.0e-6\n2000 2.0e-6\n", encoding="utf-8")
+
+            result = analyze_direct_nemd_outputs(
+                root / "nemd.in",
+                profile,
+                flux,
+                min_gradient_r2=0.99,
+                min_temperature_span=20.0,
+            )
+
+            expected_flux = 2.0e-6 * (4184.0 / 6.02214076e23) / 1.0e-35
+            expected_kappa = expected_flux / (20.0 * 1.0e10)
+            self.assertTrue(result.success, result.message)
+            self.assertAlmostEqual(result.gradient_k_per_a, 20.0)
+            self.assertAlmostEqual(result.gradient_r2, 1.0)
+            self.assertAlmostEqual(result.conductivity_w_mk, expected_kappa)
+
+    def test_analyzer_rejects_profile_without_linear_gradient(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "temp.profile"
+            flux = root / "flux.profile"
+            rows = ["# profile", "1000 20 1000"]
+            temperatures = [300, 450, 280, 430, 260] * 4
+            for index, temperature in enumerate(temperatures):
+                rows.append(f"{index + 1} {0.25 + 0.5 * index} 50 {temperature}")
+            profile.write_text("\n".join(rows), encoding="utf-8")
+            flux.write_text("# step Jx\n1000 2.0e-6\n", encoding="utf-8")
+
+            result = analyze_direct_nemd_outputs(
+                root / "nemd.in",
+                profile,
+                flux,
+                min_gradient_r2=0.70,
+            )
+
+            self.assertFalse(result.success)
+            self.assertIn("R2", result.message)
 
 
 if __name__ == "__main__":

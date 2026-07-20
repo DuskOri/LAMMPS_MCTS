@@ -9,7 +9,7 @@ except ImportError:
     yaml = None
 
 from generator import build_polymer_from_sequence, prepare_initial_system
-from md_engine import write_rapid_gk_input
+from md_engine import write_fast_tc_input
 from mcts import MCTSEngine, ThermalFeedbackEvaluator, configure_fragment_registry
 from mcts.ai_fragment_api import generate_ai_fragment_file
 from post_process import (
@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "thermal_conductivity": {
         "profile": "quick",
         "write_fast_input": True,
-        "method": "rapid_green_kubo",
+        "method": "direct_nemd",
         "temperature": 300.0,
         "pressure": 1.0,
         "timestep": 0.5,
@@ -99,9 +99,17 @@ DEFAULT_CONFIG = {
         "cooling_steps": 3000,
         "nvt_steps": 2000,
         "npt_steps": 8000,
-        "production_steps": 30000,
+        "production_steps": 100000,
         "sample_nevery": 10,
         "correlation_samples": 300,
+        "nemd_hot_temperature": 450.0,
+        "nemd_cold_temperature": 150.0,
+        "nemd_thermostat_damp": 1.0,
+        "nemd_steady_steps": 100000,
+        "nemd_profile_nevery": 10,
+        "nemd_profile_repeat": 100,
+        "nemd_min_gradient_r2": 0.70,
+        "nemd_min_temperature_span": 5.0,
         "thermo_every": 500,
         "dump_every": 5000,
         "random_seed": 87287,
@@ -114,7 +122,7 @@ DEFAULT_CONFIG = {
         "special_bonds": "amber",
         "force_field_include": "",
         "analyze_outputs": True,
-        "trim_fraction": 0.20,
+        "trim_fraction": 0.50,
     },
     "lammps": {
         "executable": "lmp",
@@ -261,7 +269,7 @@ def prepare_systems(build_results, config):
 
 
 def write_thermal_inputs(system_results, config):
-    """为已经生成的体系 data 文件输出快速热导率 LAMMPS 输入脚本。"""
+    """为已经生成的体系 data 文件输出热导率 LAMMPS 输入脚本。"""
     tc_config = config["thermal_conductivity"]
     output_dir = Path(config["output"]["directory"]) / "lammps"
 
@@ -280,10 +288,16 @@ def write_thermal_inputs(system_results, config):
             continue
 
         stem = Path(system_result.system_data_path).stem.replace("_system", "")
-        input_file = output_dir / f"{stem}_rapid_gk.in"
+        method = str(tc_config.get("method", "direct_nemd")).strip().lower()
+        suffix = (
+            "direct_nemd"
+            if method in ("direct_nemd", "nemd", "langevin_nemd")
+            else "rapid_gk"
+        )
+        input_file = output_dir / f"{stem}_{suffix}.in"
         output_prefix = output_dir / stem
         params["molecule_count"] = system_result.molecule_count
-        result = write_rapid_gk_input(
+        result = write_fast_tc_input(
             data_file=system_result.system_data_path,
             input_file=input_file,
             output_prefix=output_prefix,

@@ -115,7 +115,7 @@
                 </select>
               </label>
               <label class="field">
-                <span>Green-Kubo 档位</span>
+                <span>NEMD 计算档位</span>
                 <select id="gkProfileSelect">
                   <option value="quick">快速筛选</option>
                   <option value="standard">标准复核</option>
@@ -160,7 +160,7 @@
                   <span class="radio-indicator" aria-hidden="true"></span>
                   <span>
                     <strong>LAMMPS 热导</strong>
-                    <small>每轮用快速 Green-Kubo 结果回传 MCTS</small>
+                    <small>每轮用直接 NEMD 结果回传 MCTS</small>
                   </span>
                 </label>
                 <label>
@@ -204,9 +204,9 @@
               <li data-stage="search"><span>1</span><div><strong>MCTS 选择</strong><small>生成本轮完整重复单元</small></div></li>
               <li data-stage="build"><span>2</span><div><strong>RDKit 建链</strong><small>自动计算 DP 并生成结构</small></div></li>
               <li data-stage="packmol"><span>3</span><div><strong>Packmol 装箱</strong><small>建立多链初始体系</small></div></li>
-              <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>写出快速 GK 计算文件</small></div></li>
+              <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>写出冷热区 NEMD 计算文件</small></div></li>
               <li data-stage="compress"><span>5</span><div><strong>体系压缩</strong><small>高温熔融、预压缩并寻找密度平台</small></div></li>
-              <li data-stage="run_lammps"><span>6</span><div><strong>Green-Kubo</strong><small>平衡后采样热流自相关</small></div></li>
+              <li data-stage="run_lammps"><span>6</span><div><strong>直接 NEMD</strong><small>建立温度梯度并采样中央区热流</small></div></li>
               <li data-stage="mcts_lammps"><span>7</span><div><strong>Reward 回传</strong><small>热导率转换为奖励并回传</small></div></li>
               <li data-stage="export"><span>8</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
               <li data-stage="save"><span>9</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
@@ -383,7 +383,7 @@
         </section>
 
         <section class="panel database-panel">
-          <div class="table-caption"><div><strong>热导率结果</strong><span>快速 Green-Kubo 反馈记录</span></div></div>
+          <div class="table-caption"><div><strong>热导率结果</strong><span>直接 NEMD 反馈记录</span></div></div>
           <div class="table-wrap">
             <table id="thermalTable"><thead></thead><tbody></tbody></table>
           </div>
@@ -430,6 +430,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260720p"></script>
+  <script src="app.js?v=20260720q"></script>
 </body>
 </html>

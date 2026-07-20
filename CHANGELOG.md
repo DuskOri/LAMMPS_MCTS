@@ -2,6 +2,11 @@
 
 ## 2026-07-20
 
+- 将默认热导 reward 从快速 Green-Kubo 切换为参考 `in.pur.lmp` 的直接 NEMD。
+- 保留 `fix langevin` 挂在 `all` 并通过 `temp/region` 限定冷热区的写法，中央区域继续使用 `compute heat/flux` 输出 `Jx`。
+- 增加 NEMD 温度梯度拟合、热流单位换算以及温差和线性度质量门槛。
+- 快速档使用 10 万步稳态与 10 万步生产，标准档使用 50 万步与 50 万步。
+- 前端运行阶段、命令示例和结果说明同步改为直接 NEMD。
 - 将 MCTS 路径定义为 Start 到 End 的重复单元，默认最多 5 个真实片段。
 - 用快速 Green-Kubo 分子内热流自相关流程替换零力 NEMD 输入。
 - 增加 LAMMPS data 力场系数检查，未参数化体系不再产生伪热导率 reward。
