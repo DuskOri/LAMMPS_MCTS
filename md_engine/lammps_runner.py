@@ -114,7 +114,16 @@ def _should_stream_line(line):
     upper = text.upper()
     if upper.startswith(("ERROR", "WARNING")):
         return True
-    if text.startswith(("LAMMPS (", "Reading data file", "Loop time of", "Total wall time")):
+    if text.startswith(
+        (
+            "LAMMPS (",
+            "Reading data file",
+            "Density ",
+            "Final equilibrated density",
+            "Loop time of",
+            "Total wall time",
+        )
+    ):
         return True
     if text.startswith(("minimize", "run ", "fix             eq_", "fix             production")):
         return True

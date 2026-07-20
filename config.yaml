@@ -6,11 +6,11 @@ mcts:
   exploration_weight: 1.41421356237
   rollout_limit: 32
   random_seed: 7
-  feedback_mode: heuristic
-  feedback_every_iteration: false
+  feedback_mode: thermal
+  feedback_every_iteration: true
   feedback_max_evaluations: 2
   feedback_output_dir: outputs/mcts_feedback
-  feedback_run_lammps: false
+  feedback_run_lammps: true
   feedback_reward_scale: 0.2
   feedback_fallback_to_heuristic: false
   feedback_failure_reward: -1.0
@@ -56,6 +56,17 @@ thermal_conductivity:
   tdamp: 50.0
   pdamp: 500.0
   cutoff: 12.0
+  density_equilibration: true
+  melt_temperature: 550.0
+  melt_heating_steps: 2000
+  melt_hold_steps: 2000
+  precompression_density: 0.7
+  precompression_steps: 5000
+  density_block_steps: 2000
+  density_sample_every: 100
+  density_max_blocks: 10
+  density_plateau_tolerance: 0.05
+  cooling_steps: 3000
   nvt_steps: 2000
   npt_steps: 8000
   production_steps: 30000

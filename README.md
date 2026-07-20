@@ -124,12 +124,13 @@ python main.py
 2. 加载内置片段和自定义片段。
 3. 从 `Start` 节点开始 MCTS 搜索。
 4. 生成候选聚合物片段序列。
-5. 按 DP 构建聚合物链。
+5. 根据目标链长自动计算聚合度并构建聚合物链。
 6. 输出 PDB。
 7. 调用 Packmol 生成初始体系。
-8. 写出快速热导率 LAMMPS 输入文件。
-9. 如果配置允许，则运行 LAMMPS。
-10. 解析热导率结果并写入 CSV。
+8. 写出包含密度平衡和快速 Green-Kubo 的 LAMMPS 输入文件。
+9. 如果配置允许，则依次执行高温熔融、预压缩、NPT 密度平台判断、冷却和平衡。
+10. 在平衡后的密度下运行 Green-Kubo 采样。
+11. 解析热导率结果并写入 CSV。
 
 ## 前端控制台
 
@@ -152,7 +153,7 @@ http://localhost:8010/frontend/
 前端当前提供：
 
 - 新手向运行页。
-- DP、迭代次数、候选数量、最大片段步数修改。
+- 目标链长、迭代次数、候选数量、最大片段步数修改。
 - 已有有向图/片段空间选择。
 - 内置家族与自定义片段空间互斥；选择聚酰亚胺时不会加载 `CUSTOM_*` 片段。
 - 自定义有向图创建。
@@ -160,6 +161,7 @@ http://localhost:8010/frontend/
 - 当前运行阶段显示。
 - 按“第 N / 总轮数”显示循环进度，并在每次评价后即时更新实时 Top K。
 - Green-Kubo 提供“快速筛选”和“标准复核”两档；快速档用于 MCTS，标准档用于最终候选复算。
+- 可开关密度平台平衡，并设置预压缩密度、平台判断阈值和最大判断窗口数。
 - 前端可单独设置 LAMMPS 超时秒数；`0` 表示不限制运行时间。
 - MCTS 候选序列和低热导数据库查看。
 - 热导率结果表。
@@ -214,7 +216,7 @@ http://localhost:8010/frontend/
 6. 点击“一键运行”，程序会按阶段执行：
 
 ```text
-MCTS 搜索 -> RDKit 建链 -> Packmol 初始体系 -> 写出 LAMMPS 输入 -> 运行 LAMMPS -> 热导率后处理 -> 保存数据库
+MCTS 搜索 -> RDKit 建链 -> Packmol 初始体系 -> 高温熔融与预压缩 -> NPT 密度平台 -> 冷却平衡 -> Green-Kubo -> 保存数据库
 ```
 
 7. 运行结束后，在“数据库”页面查看候选序列和热导率结果。低热导数据库会优先展示热导率较低的候选。
@@ -334,6 +336,10 @@ lmp -in outputs/lammps/candidate_001_rapid_gk.in
 
 快速 Green-Kubo 脚本保留分子间相互作用，只省略不同分子热流之间的交叉相关项。输入 data 必须包含真实的 Pair、Bond、Angle、Dihedral 等力场系数；缺少所需系数时程序会停止该次热导评价并记录原因，不会再使用零作用力结果。
 
+Green-Kubo 采样前会先建立密度平台。程序在高温下熔融体系，用 `fix deform` 将明显疏松的 Packmol 盒子保守预压缩到筛选起点，再通过常压 NPT 让盒子尺寸和密度自行变化。预压缩密度不是聚合物的指定最终密度；最终密度由当前结构、力场、温度和压力共同决定。
+
+密度平台由连续三个采样窗口的平均密度判断。快速档默认相对波动小于 `5%` 时停止，最多检查 `10` 个窗口；标准档默认阈值为 `2%`，最多检查 `20` 个窗口。达到最大窗口数仍未收敛时，日志会输出警告并继续后续冷却与筛选，正式计算前应延长平衡时间重新检查。
+
 ### 查看结果
 
 常用结果文件如下：
@@ -344,6 +350,7 @@ lmp -in outputs/lammps/candidate_001_rapid_gk.in
 - `outputs/thermal_inputs.csv`：最终 top_k 候选的 LAMMPS 输入脚本路径。
 - `outputs/feedback_records.csv`：MCTS 搜索阶段的热导率反馈记录。
 - `outputs/low_k_database.csv`：按搜索阶段 reward 排序的低热导候选数据库。
+- `outputs/mcts_feedback/eval_NNNN/lammps/rapid_gk_density.dat`：本轮高温 NPT 的密度窗口均值。
 
 如果只关心最终低热导候选，优先查看 `outputs/low_k_database.csv`。如果要排查流程问题，则按上述文件顺序逐步检查。
 
@@ -593,7 +600,22 @@ mcts:
   feedback_run_lammps: true
 ```
 
-快速热导率脚本使用平衡态 Green-Kubo 思路。程序按 molecule ID 分别计算热流，通过 `fix ave/correlate ... type auto` 累加每个分子三个方向的自相关，从而省略不同分子热流之间的交叉相关项。LAMMPS 动力学中的分子间非键作用仍然保留。
+快速热导率脚本先执行密度平衡，再进入平衡态 Green-Kubo。默认过程为高温升温与熔融、疏松盒子预压缩、高温常压 NPT 密度平台检测、降温 NPT、目标温度 NPT/NVT，最后执行 NVE 热流采样。程序按 molecule ID 分别计算热流，通过 `fix ave/correlate ... type auto` 累加每个分子三个方向的自相关，从而省略不同分子热流之间的交叉相关项。LAMMPS 动力学中的分子间非键作用仍然保留。
+
+相关配置位于 `lammps` 段：
+
+```yaml
+lammps:
+  density_equilibration: true
+  melt_temperature: 550.0
+  precompression_density: 0.7
+  density_block_steps: 2000
+  density_sample_every: 100
+  density_max_blocks: 10
+  density_plateau_tolerance: 0.05
+```
+
+`precompression_density` 只控制预压缩起点，而且不会让本来更致密的体系反向膨胀。`density_plateau_tolerance` 是三个连续窗口的相对波动阈值，不是目标密度。最终密度会写入 LAMMPS 日志，完整的窗口历史写入 `rapid_gk_density.dat`。
 
 默认的 `system.force_field: uff_screening` 会从 RDKit MOL 文件读取键级，计算 Gasteiger 电荷，并写入 UFF 的非键、键、键角和二面角参数。Packmol 只负责多链装箱，随后程序把这些参数和装箱坐标组合成可直接读取的 LAMMPS data。若选择 `topology_only`，或 data 缺少必要的 `Pair Coeffs`、`Bond Coeffs` 等段，热导评价会明确停止，不会生成零作用力的伪结果。
 

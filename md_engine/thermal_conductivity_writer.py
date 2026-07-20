@@ -27,6 +27,7 @@ def write_rapid_gk_input(data_file, input_file, output_prefix, params=None):
     correlation_file = Path(f"{output_prefix}_intra_hfacf.dat")
     conductivity_file = Path(f"{output_prefix}_kappa.dat")
     dump_file = Path(f"{output_prefix}_dump.lammpstrj")
+    density_file = Path(f"{output_prefix}_density.dat")
 
     missing = validate_force_field_data(
         data_path,
@@ -58,6 +59,16 @@ def write_rapid_gk_input(data_file, input_file, output_prefix, params=None):
     params["production_steps"] = (
         (production_steps + correlation_every - 1) // correlation_every
     ) * correlation_every
+    density_sample_every = max(int(params["density_sample_every"]), 1)
+    density_block_steps = max(int(params["density_block_steps"]), density_sample_every)
+    density_window_samples = max(density_block_steps // density_sample_every, 1)
+    params["density_sample_every"] = density_sample_every
+    params["density_window_samples"] = density_window_samples
+    params["density_block_steps"] = density_sample_every * density_window_samples
+    params["density_max_blocks"] = max(int(params["density_max_blocks"]), 3)
+    params["density_plateau_tolerance"] = max(
+        float(params["density_plateau_tolerance"]), 1.0e-6
+    )
 
     input_path.parent.mkdir(parents=True, exist_ok=True)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +77,7 @@ def write_rapid_gk_input(data_file, input_file, output_prefix, params=None):
         correlation_file=correlation_file.as_posix(),
         conductivity_file=conductivity_file.as_posix(),
         dump_file=dump_file.as_posix(),
+        density_file=density_file.as_posix(),
         molecule_count=molecule_count,
         params=params,
     )
@@ -139,6 +151,17 @@ def _default_params():
         "tdamp": 50.0,
         "pdamp": 500.0,
         "cutoff": 12.0,
+        "density_equilibration": True,
+        "melt_temperature": 550.0,
+        "melt_heating_steps": 2000,
+        "melt_hold_steps": 2000,
+        "precompression_density": 0.70,
+        "precompression_steps": 5000,
+        "density_block_steps": 2000,
+        "density_sample_every": 100,
+        "density_max_blocks": 10,
+        "density_plateau_tolerance": 0.05,
+        "cooling_steps": 3000,
         "nvt_steps": 10000,
         "npt_steps": 50000,
         "production_steps": 100000,
@@ -170,11 +193,109 @@ def _style_line(keyword, value):
     return f"{keyword:<16}{value}" if value and value.lower() != "none" else ""
 
 
+def _as_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _render_density_equilibration(density_file, params):
+    """生成熔融、预压缩和三窗口密度平台判断流程。"""
+    if not _as_bool(params.get("density_equilibration", True)):
+        return f"""fix             eq_nvt all nvt temp ${{T}} ${{T}} ${{tdamp}}
+run             {params["nvt_steps"]}
+unfix           eq_nvt
+
+fix             eq_npt all npt temp ${{T}} ${{T}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
+run             {params["npt_steps"]}
+unfix           eq_npt"""
+
+    remaining_blocks = max(int(params["density_max_blocks"]) - 2, 1)
+    return f"""# 高温熔融，释放初始构象中的局部应力。
+variable        Tmelt equal {params["melt_temperature"]}
+fix             melt_heat all nvt temp ${{T}} ${{Tmelt}} ${{tdamp}}
+run             {params["melt_heating_steps"]}
+unfix           melt_heat
+
+fix             melt_hold all nvt temp ${{Tmelt}} ${{Tmelt}} ${{tdamp}}
+run             {params["melt_hold_steps"]}
+unfix           melt_hold
+
+# 预压缩只消除 Packmol 大空隙，不规定最终平衡密度。
+variable        rho_system equal (mass(all)/0.602214076)/vol
+variable        rho_pre equal {params["precompression_density"]}
+variable        pre_scale equal ternary(v_rho_system<v_rho_pre,(v_rho_system/v_rho_pre)^(1.0/3.0),1.0)
+print           "Density before precompression: ${{rho_system}} g/cm^3"
+print           "Precompression box scale: ${{pre_scale}}"
+fix             pre_nvt all nvt temp ${{Tmelt}} ${{Tmelt}} ${{tdamp}}
+fix             pre_box all deform 100 x scale ${{pre_scale}} y scale ${{pre_scale}} z scale ${{pre_scale}} remap x units box
+run             {params["precompression_steps"]}
+unfix           pre_box
+unfix           pre_nvt
+
+# 高温、目标压力下分块运行 NPT。连续三个窗口的平均密度进入平台后退出。
+variable        rho_now equal density
+variable        rho_tol equal {params["density_plateau_tolerance"]}
+fix             density_npt all npt temp ${{Tmelt}} ${{Tmelt}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
+fix             density_window all ave/time {params["density_sample_every"]} {params["density_window_samples"]} {params["density_block_steps"]} v_rho_now ave one file {density_file}
+thermo          {params["density_block_steps"]}
+
+run             {params["density_block_steps"]}
+variable        rho_a equal $(f_density_window)
+run             {params["density_block_steps"]}
+variable        rho_b equal $(f_density_window)
+variable        density_loop loop {remaining_blocks}
+
+label           density_plateau_loop
+run             {params["density_block_steps"]}
+variable        rho_c equal $(f_density_window)
+variable        rho_spread equal sqrt(((v_rho_a-v_rho_b)^2+(v_rho_b-v_rho_c)^2+(v_rho_a-v_rho_c)^2)/3.0)/((v_rho_a+v_rho_b+v_rho_c)/3.0)
+print           "Density plateau check: rho=${{rho_c}} g/cm^3, relative spread=${{rho_spread}}"
+if              "${{rho_spread}} <= ${{rho_tol}}" then "jump SELF density_plateau_done"
+variable        rho_a delete
+variable        rho_a equal ${{rho_b}}
+variable        rho_b delete
+variable        rho_b equal ${{rho_c}}
+variable        rho_c delete
+variable        rho_spread delete
+next            density_loop
+jump            SELF density_plateau_loop
+jump            SELF density_plateau_limit
+
+label           density_plateau_done
+print           "Density plateau reached within tolerance."
+jump            SELF density_plateau_cleanup
+
+label           density_plateau_limit
+print           "WARNING: Density plateau was not reached before the configured window limit."
+
+label           density_plateau_cleanup
+unfix           density_window
+unfix           density_npt
+print           "Density plateau stage finished at: ${{rho_system}} g/cm^3"
+
+# 在目标压力下降温，再完成常温 NPT 与 NVT 平衡。
+fix             cool_npt all npt temp ${{Tmelt}} ${{T}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
+run             {params["cooling_steps"]}
+unfix           cool_npt
+
+fix             final_npt all npt temp ${{T}} ${{T}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
+run             {params["npt_steps"]}
+unfix           final_npt
+
+fix             final_nvt all nvt temp ${{T}} ${{T}} ${{tdamp}}
+run             {params["nvt_steps"]}
+unfix           final_nvt
+print           "Final equilibrated density: ${{rho_system}} g/cm^3"
+"""
+
+
 def _render_rapid_gk_script(
     data_file,
     correlation_file,
     conductivity_file,
     dump_file,
+    density_file,
     molecule_count,
     params,
 ):
@@ -192,6 +313,7 @@ def _render_rapid_gk_script(
     include_line = f"include         {Path(include_file).as_posix()}" if include_file else ""
     kspace_line = _style_line("kspace_style", params.get("kspace_style", ""))
     special_line = _style_line("special_bonds", params.get("special_bonds", ""))
+    equilibration_block = _render_density_equilibration(density_file, params)
 
     molecule_blocks = []
     heat_flux_values = []
@@ -250,13 +372,7 @@ thermo_modify   flush yes
 minimize        1.0e-4 1.0e-6 500 5000
 velocity        all create ${{T}} {params["random_seed"]} mom yes rot yes dist gaussian
 
-fix             eq_nvt all nvt temp ${{T}} ${{T}} ${{tdamp}}
-run             {params["nvt_steps"]}
-unfix           eq_nvt
-
-fix             eq_npt all npt temp ${{T}} ${{T}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
-run             {params["npt_steps"]}
-unfix           eq_npt
+{equilibration_block}
 reset_timestep  0
 
 {molecule_block}

@@ -34,6 +34,17 @@ THERMAL_PROFILES = {
     "quick": {
         "system": {"molecule_count": 4, "box_size": 45.0},
         "thermal_conductivity": {
+            "density_equilibration": True,
+            "melt_temperature": 550.0,
+            "melt_heating_steps": 2000,
+            "melt_hold_steps": 2000,
+            "precompression_density": 0.70,
+            "precompression_steps": 5000,
+            "density_block_steps": 2000,
+            "density_sample_every": 100,
+            "density_max_blocks": 10,
+            "density_plateau_tolerance": 0.05,
+            "cooling_steps": 3000,
             "nvt_steps": 2000,
             "npt_steps": 8000,
             "production_steps": 30000,
@@ -47,6 +58,17 @@ THERMAL_PROFILES = {
     "standard": {
         "system": {"molecule_count": 10, "box_size": 60.0},
         "thermal_conductivity": {
+            "density_equilibration": True,
+            "melt_temperature": 550.0,
+            "melt_heating_steps": 10000,
+            "melt_hold_steps": 20000,
+            "precompression_density": 0.70,
+            "precompression_steps": 50000,
+            "density_block_steps": 10000,
+            "density_sample_every": 100,
+            "density_max_blocks": 20,
+            "density_plateau_tolerance": 0.02,
+            "cooling_steps": 50000,
             "nvt_steps": 10000,
             "npt_steps": 50000,
             "production_steps": 100000,
@@ -198,6 +220,12 @@ def public_config_view(config):
         "feedback_every_iteration": bool(mcts_config.get("feedback_every_iteration", True)),
         "feedback_max_evaluations": int(mcts_config.get("feedback_max_evaluations", 0) or 0),
         "gk_profile": str(tc_config.get("profile", "quick")),
+        "density_equilibration": bool(tc_config.get("density_equilibration", True)),
+        "precompression_density": float(tc_config.get("precompression_density", 0.70)),
+        "density_plateau_percent": float(
+            tc_config.get("density_plateau_tolerance", 0.05)
+        ) * 100.0,
+        "density_max_blocks": int(tc_config.get("density_max_blocks", 10)),
         "timeout_seconds": int(lammps_config.get("timeout_seconds", 1800) or 0),
     }
 
@@ -235,6 +263,18 @@ def update_config(payload):
         mcts_config["feedback_max_evaluations"] = int(payload["feedback_max_evaluations"])
     if "gk_profile" in payload:
         apply_thermal_profile(config, str(payload["gk_profile"]))
+    if "density_equilibration" in payload:
+        tc_config["density_equilibration"] = bool(payload["density_equilibration"])
+    if "precompression_density" in payload:
+        tc_config["precompression_density"] = max(
+            0.05, float(payload["precompression_density"])
+        )
+    if "density_plateau_percent" in payload:
+        tc_config["density_plateau_tolerance"] = max(
+            0.0001, float(payload["density_plateau_percent"]) / 100.0
+        )
+    if "density_max_blocks" in payload:
+        tc_config["density_max_blocks"] = max(3, int(payload["density_max_blocks"]))
     if "timeout_seconds" in payload:
         lammps_config["timeout_seconds"] = max(0, int(payload["timeout_seconds"]))
 

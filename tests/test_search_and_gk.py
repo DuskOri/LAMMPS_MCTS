@@ -123,6 +123,7 @@ class RapidGreenKuboTests(unittest.TestCase):
         self.assertTrue(_should_stream_line("3000 301.2 -20.0 0.18"))
         self.assertTrue(_should_stream_line("WARNING: test warning"))
         self.assertTrue(_should_stream_line("ERROR: test error"))
+        self.assertTrue(_should_stream_line("Density plateau check: rho=1.02"))
         self.assertFalse(_should_stream_line("Pair | 18.5 | 60.8"))
 
     def test_uff_writer_generates_force_field_sections(self):
@@ -243,6 +244,47 @@ class RapidGreenKuboTests(unittest.TestCase):
             script = (root / "gk.in").read_text(encoding="utf-8")
             self.assertIn("thermo          ${d}", script)
             self.assertIn("run             6000", script)
+
+    def test_density_equilibration_uses_plateau_instead_of_final_density(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "parameterized.data"
+            data_file.write_text(
+                "\n".join(
+                    [
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Pair Coeffs",
+                        "",
+                        "1 0.1 3.5",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            result = write_rapid_gk_input(
+                data_file,
+                root / "gk.in",
+                root / "gk",
+                params={
+                    "density_equilibration": True,
+                    "precompression_density": 0.7,
+                    "density_block_steps": 1000,
+                    "density_sample_every": 100,
+                    "density_max_blocks": 5,
+                    "density_plateau_tolerance": 0.02,
+                },
+            )
+
+            self.assertTrue(result.success)
+            script = (root / "gk.in").read_text(encoding="utf-8")
+            self.assertIn("variable        rho_pre equal 0.7", script)
+            self.assertIn("variable        density_loop loop 3", script)
+            self.assertIn("Density plateau check", script)
+            self.assertIn("jump SELF density_plateau_done", script)
+            self.assertIn("Density plateau reached within tolerance", script)
+            self.assertIn("Density plateau was not reached", script)
+            self.assertNotIn("target density = 1.1", script)
 
     def test_conductivity_uses_tail_average(self):
         with TemporaryDirectory() as directory:

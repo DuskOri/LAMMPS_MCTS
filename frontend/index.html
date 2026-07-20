@@ -127,6 +127,29 @@
                 <input id="lammpsTimeoutInput" type="number" min="0" step="60" value="1800">
                 <small>0 表示不限制时间</small>
               </label>
+              <label class="field toggle-field">
+                <span>密度平台平衡</span>
+                <span class="toggle-row">
+                  <input id="densityEquilibrationInput" type="checkbox" checked>
+                  <span class="toggle-track" aria-hidden="true"><span></span></span>
+                  <small>熔融后由 NPT 自动寻找稳定密度</small>
+                </span>
+              </label>
+              <label class="field">
+                <span>预压缩密度 (g/cm³)</span>
+                <input id="precompressionDensityInput" type="number" min="0.05" max="2" step="0.05" value="0.7">
+                <small>只用于消除初始大空隙</small>
+              </label>
+              <label class="field">
+                <span>密度平台阈值 (%)</span>
+                <input id="densityPlateauPercentInput" type="number" min="0.01" max="20" step="0.1" value="5">
+                <small>连续三个窗口的相对波动</small>
+              </label>
+              <label class="field">
+                <span>最大密度窗口数</span>
+                <input id="densityMaxBlocksInput" type="number" min="3" max="100" step="1" value="10">
+                <small>达到上限时日志会明确警告</small>
+              </label>
             </div>
 
             <fieldset class="mode-fieldset">
@@ -182,7 +205,7 @@
               <li data-stage="build"><span>2</span><div><strong>RDKit 建链</strong><small>自动计算 DP 并生成结构</small></div></li>
               <li data-stage="packmol"><span>3</span><div><strong>Packmol 装箱</strong><small>建立多链初始体系</small></div></li>
               <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>写出快速 GK 计算文件</small></div></li>
-              <li data-stage="run_lammps"><span>5</span><div><strong>LAMMPS 计算</strong><small>运行快速 Green-Kubo</small></div></li>
+              <li data-stage="run_lammps"><span>5</span><div><strong>LAMMPS 计算</strong><small>密度平台平衡与快速 Green-Kubo</small></div></li>
               <li data-stage="mcts_lammps"><span>6</span><div><strong>Reward 回传</strong><small>热导率转换为奖励并回传</small></div></li>
               <li data-stage="export"><span>7</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
               <li data-stage="save"><span>8</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
@@ -406,6 +429,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260720n"></script>
+  <script src="app.js?v=20260720o"></script>
 </body>
 </html>

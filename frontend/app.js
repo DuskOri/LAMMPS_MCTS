@@ -60,9 +60,19 @@ const stageText = {
   failed: "失败"
 };
 
-const profileTimeouts = {
-  quick: 1800,
-  standard: 7200
+const thermalProfileDefaults = {
+  quick: {
+    timeout: 1800,
+    precompressionDensity: 0.7,
+    densityPlateauPercent: 5,
+    densityMaxBlocks: 10
+  },
+  standard: {
+    timeout: 7200,
+    precompressionDensity: 0.7,
+    densityPlateauPercent: 2,
+    densityMaxBlocks: 20
+  }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -96,7 +106,7 @@ function bindActions() {
   document.getElementById("refreshResultsBtn").addEventListener("click", loadResults);
   document.getElementById("candidateFilter").addEventListener("input", renderCandidateTable);
   document.getElementById("iterationsInput").addEventListener("input", updateIdleIterationTarget);
-  document.getElementById("gkProfileSelect").addEventListener("change", updateProfileTimeout);
+  document.getElementById("gkProfileSelect").addEventListener("change", updateThermalProfileFields);
   document.getElementById("clearSelectedCandidatesBtn").addEventListener("click", clearSelectedCandidates);
   document.getElementById("clearAllCandidatesBtn").addEventListener("click", clearAllCandidates);
 
@@ -166,6 +176,10 @@ function fillConfigForm(config) {
   document.getElementById("graphPresetSelect").value = activeFamily;
   document.getElementById("gkProfileSelect").value = config.gk_profile === "standard" ? "standard" : "quick";
   document.getElementById("lammpsTimeoutInput").value = Number(config.timeout_seconds) || 0;
+  document.getElementById("densityEquilibrationInput").checked = config.density_equilibration !== false;
+  document.getElementById("precompressionDensityInput").value = Number(config.precompression_density) || 0.7;
+  document.getElementById("densityPlateauPercentInput").value = Number(config.density_plateau_percent) || 5;
+  document.getElementById("densityMaxBlocksInput").value = Number(config.density_max_blocks) || 10;
   setRewardMode(config.feedback_mode === "thermal" && config.feedback_run_lammps !== false ? "thermal" : "heuristic");
 }
 
@@ -181,6 +195,10 @@ function readConfigForm() {
     active_families: document.getElementById("graphPresetSelect").value,
     gk_profile: document.getElementById("gkProfileSelect").value,
     timeout_seconds: Number(document.getElementById("lammpsTimeoutInput").value || 0),
+    density_equilibration: document.getElementById("densityEquilibrationInput").checked,
+    precompression_density: Number(document.getElementById("precompressionDensityInput").value || 0.7),
+    density_plateau_percent: Number(document.getElementById("densityPlateauPercentInput").value || 5),
+    density_max_blocks: Number(document.getElementById("densityMaxBlocksInput").value || 10),
     run_lammps: useThermalReward,
     feedback_mode: useThermalReward ? "thermal" : "heuristic",
     feedback_run_lammps: useThermalReward,
@@ -189,9 +207,13 @@ function readConfigForm() {
   };
 }
 
-function updateProfileTimeout() {
+function updateThermalProfileFields() {
   const profile = document.getElementById("gkProfileSelect").value;
-  document.getElementById("lammpsTimeoutInput").value = profileTimeouts[profile] || 1800;
+  const defaults = thermalProfileDefaults[profile] || thermalProfileDefaults.quick;
+  document.getElementById("lammpsTimeoutInput").value = defaults.timeout;
+  document.getElementById("precompressionDensityInput").value = defaults.precompressionDensity;
+  document.getElementById("densityPlateauPercentInput").value = defaults.densityPlateauPercent;
+  document.getElementById("densityMaxBlocksInput").value = defaults.densityMaxBlocks;
 }
 
 function getRewardMode() {
