@@ -361,8 +361,9 @@ LAMMPS 运行时会把阶段命令、thermo 数据、警告和错误实时输出
 ### 常见问题
 
 - 前端打不开：确认 `web_server.py` 是否正在运行，端口是否为 `8010`。
+- 更新项目代码后前端仍表现异常：先停止旧的 `web_server.py` 进程，再重新运行 `python web_server.py`。Python 服务不会自动重新导入磁盘上刚修改的后端模块。
 - RDKit 报错：确认当前环境为 `polymer_mcts`，并且已安装 RDKit。
-- Packmol 失败：可以适当增大 `system.box_size` 或降低 `system.molecule_count`。
+- Packmol 失败：先检查反馈信息是否停在 `preparing Packmol system`。若提示 `Packmol must be run with: packmol < inputfile.inp`，请重启前端服务以加载当前版本；若提示装箱空间不足，再适当增大 `system.box_size` 或降低 `system.molecule_count`。
 - LAMMPS 没有运行：先确认终端可以执行 `lmp -help`，再检查 `lammps.executable` 命令名，并将 `mcts.feedback_run_lammps` 改为 `true`。
 - 没有热导率结果：先检查 `outputs/feedback_records.csv` 中是否提示缺少力场系数，再检查 LAMMPS 是否输出 `*_intra_hfacf.dat` 和 `*_kappa.dat`。
 - AI 片段不可用：确认 API key、API URL、模型名称和返回 JSON 格式是否正确。
