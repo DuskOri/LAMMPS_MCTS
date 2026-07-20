@@ -147,14 +147,30 @@ class ThermalFeedbackEvaluator:
             return self._failed(sequence, input_result.message)
 
         if self.run_lammps:
-            self._notify(
-                "mcts_lammps",
-                f"MCTS thermal feedback {index}: running LAMMPS",
+            density_equilibration = bool(tc_config.get("density_equilibration", True))
+            initial_stage = "compress" if density_equilibration else "run_lammps"
+            initial_message = (
+                f"MCTS thermal feedback {index}: melting and compressing the system"
+                if density_equilibration
+                else f"MCTS thermal feedback {index}: running Green-Kubo"
             )
+            self._notify(initial_stage, initial_message)
+
+            def report_lammps_line(line):
+                text = str(line).strip()
+                if text.startswith("Density plateau check"):
+                    self._notify("compress", text)
+                elif text.startswith("Final equilibrated density"):
+                    self._notify(
+                        "run_lammps",
+                        f"{text}; starting Green-Kubo sampling",
+                    )
+
             run_result = run_lammps_input(
                 input_path=input_result.input_path,
                 lammps_executable=lammps_config["executable"],
                 timeout=lammps_config.get("timeout_seconds") or None,
+                line_callback=report_lammps_line,
             )
             if not run_result.success:
                 return self._failed(sequence, run_result.message, input_result.input_path)

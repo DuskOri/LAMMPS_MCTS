@@ -205,10 +205,11 @@
               <li data-stage="build"><span>2</span><div><strong>RDKit 建链</strong><small>自动计算 DP 并生成结构</small></div></li>
               <li data-stage="packmol"><span>3</span><div><strong>Packmol 装箱</strong><small>建立多链初始体系</small></div></li>
               <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>写出快速 GK 计算文件</small></div></li>
-              <li data-stage="run_lammps"><span>5</span><div><strong>LAMMPS 计算</strong><small>密度平台平衡与快速 Green-Kubo</small></div></li>
-              <li data-stage="mcts_lammps"><span>6</span><div><strong>Reward 回传</strong><small>热导率转换为奖励并回传</small></div></li>
-              <li data-stage="export"><span>7</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
-              <li data-stage="save"><span>8</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
+              <li data-stage="compress"><span>5</span><div><strong>体系压缩</strong><small>高温熔融、预压缩并寻找密度平台</small></div></li>
+              <li data-stage="run_lammps"><span>6</span><div><strong>Green-Kubo</strong><small>平衡后采样热流自相关</small></div></li>
+              <li data-stage="mcts_lammps"><span>7</span><div><strong>Reward 回传</strong><small>热导率转换为奖励并回传</small></div></li>
+              <li data-stage="export"><span>8</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
+              <li data-stage="save"><span>9</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
             </ol>
           </section>
         </div>
@@ -429,6 +430,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260720o"></script>
+  <script src="app.js?v=20260720p"></script>
 </body>
 </html>

@@ -104,6 +104,8 @@ STAGE_LABELS = {
     "build": "RDKit 建链",
     "packmol": "Packmol 初始体系",
     "write_lammps": "写出 LAMMPS 输入",
+    "compress": "高温熔融与体系压缩",
+    "run_lammps": "Green-Kubo 计算",
     "export_build": "导出 Top K 结构",
     "export_packmol": "导出 Top K 体系",
     "export_lammps": "导出 Top K 输入",

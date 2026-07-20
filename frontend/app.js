@@ -45,14 +45,15 @@ const ROLE_TEXT = {
   polar: "极性基团"
 };
 
-const stageOrder = ["search", "build", "packmol", "write_lammps", "run_lammps", "mcts_lammps", "export", "save"];
+const stageOrder = ["search", "build", "packmol", "write_lammps", "compress", "run_lammps", "mcts_lammps", "export", "save"];
 const stageText = {
   idle: "等待运行",
   search: "MCTS 搜索",
   build: "RDKit 建链",
   packmol: "Packmol 初始体系",
   write_lammps: "写出 LAMMPS 输入",
-  run_lammps: "运行 LAMMPS",
+  compress: "高温熔融与体系压缩",
+  run_lammps: "Green-Kubo 计算",
   mcts_lammps: "热导 reward 回传",
   export: "导出最终 Top K",
   save: "保存数据库",
@@ -381,6 +382,7 @@ function resolveDisplayStage(stage, message) {
   if (text.includes("building polymer")) return "build";
   if (text.includes("packmol")) return "packmol";
   if (text.includes("writing lammps")) return "write_lammps";
+  if (text.includes("compressing") || text.includes("density plateau")) return "compress";
   if (text.includes("running lammps")) return "run_lammps";
   return "mcts_lammps";
 }

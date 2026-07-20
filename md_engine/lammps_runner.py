@@ -24,6 +24,7 @@ def run_lammps_input(
     timeout=None,
     work_dir=None,
     stream_output=True,
+    line_callback=None,
 ):
     """执行 LAMMPS，持续写日志并把关键进度实时输出到命令行。"""
     input_file = Path(input_path)
@@ -80,6 +81,8 @@ def run_lammps_input(
                 log_obj.flush()
                 if stream_output and _should_stream_line(line):
                     print(f"[LAMMPS] {line.rstrip()}", flush=True)
+                if line_callback is not None and _should_stream_line(line):
+                    line_callback(line.rstrip())
         process.stdout.close()
         returncode = process.wait()
     finally:
