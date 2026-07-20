@@ -10,6 +10,7 @@ from generator import (
     resolve_degree_of_polymerization,
 )
 from md_engine import write_rapid_gk_input, write_uff_lammps_data_from_template
+from md_engine.lammps_runner import _should_stream_line
 from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
@@ -116,6 +117,14 @@ class SearchProgressTests(unittest.TestCase):
 
 
 class RapidGreenKuboTests(unittest.TestCase):
+    def test_lammps_console_output_keeps_progress_lines(self):
+        self.assertTrue(_should_stream_line("LAMMPS (22 Jul 2025)"))
+        self.assertTrue(_should_stream_line("Step Temp Press v_kappa"))
+        self.assertTrue(_should_stream_line("3000 301.2 -20.0 0.18"))
+        self.assertTrue(_should_stream_line("WARNING: test warning"))
+        self.assertTrue(_should_stream_line("ERROR: test error"))
+        self.assertFalse(_should_stream_line("Pair | 18.5 | 60.8"))
+
     def test_uff_writer_generates_force_field_sections(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

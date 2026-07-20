@@ -18,6 +18,7 @@
 - 清除仓库默认配置中的开发机绝对路径，Packmol 和 LAMMPS 改由系统 `PATH` 查找。
 - 整理 README 的跨设备启动说明，删除本地文件路径示例。
 - 修复 Green-Kubo 生产阶段在非相关窗口步读取 `v_kappa` 导致的 LAMMPS compatible time 错误。
+- LAMMPS 运行期间实时刷新候选日志，并将关键进度行同步输出到命令行。
 
 ## 2026-07-19
 

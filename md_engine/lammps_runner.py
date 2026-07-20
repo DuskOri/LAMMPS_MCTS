@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+import threading
 
 
 @dataclass
@@ -16,8 +17,15 @@ class LammpsRunResult:
     message: str = ""
 
 
-def run_lammps_input(input_path, lammps_executable="lmp", log_path=None, timeout=None, work_dir=None):
-    """执行一个 LAMMPS 输入脚本，并把标准输出保存成日志。"""
+def run_lammps_input(
+    input_path,
+    lammps_executable="lmp",
+    log_path=None,
+    timeout=None,
+    work_dir=None,
+    stream_output=True,
+):
+    """执行 LAMMPS，持续写日志并把关键进度实时输出到命令行。"""
     input_file = Path(input_path)
     if log_path is None:
         log_file = input_file.with_suffix(".log")
@@ -26,15 +34,20 @@ def run_lammps_input(input_path, lammps_executable="lmp", log_path=None, timeout
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     command = [str(lammps_executable), "-in", str(input_file)]
+    if stream_output:
+        print(f"[LAMMPS] input: {input_file.resolve()}", flush=True)
+        print(f"[LAMMPS] log: {log_file.resolve()}", flush=True)
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=str(work_dir or Path.cwd()),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            check=False,
-            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
         )
     except FileNotFoundError:
         return LammpsRunResult(
@@ -44,8 +57,37 @@ def run_lammps_input(input_path, lammps_executable="lmp", log_path=None, timeout
             returncode=127,
             message="LAMMPS executable not found.",
         )
-    except subprocess.TimeoutExpired as error:
-        log_file.write_text(error.stdout or "", encoding="utf-8", errors="ignore")
+
+    timed_out = threading.Event()
+
+    def stop_after_timeout():
+        if process.poll() is None:
+            timed_out.set()
+            process.kill()
+
+    timer = None
+    if timeout is not None and float(timeout) > 0:
+        timer = threading.Timer(float(timeout), stop_after_timeout)
+        timer.daemon = True
+        timer.start()
+
+    lines = []
+    try:
+        with log_file.open("w", encoding="utf-8", errors="replace") as log_obj:
+            for line in iter(process.stdout.readline, ""):
+                lines.append(line)
+                log_obj.write(line)
+                log_obj.flush()
+                if stream_output and _should_stream_line(line):
+                    print(f"[LAMMPS] {line.rstrip()}", flush=True)
+        process.stdout.close()
+        returncode = process.wait()
+    finally:
+        if timer is not None:
+            timer.cancel()
+
+    log_text = "".join(lines)
+    if timed_out.is_set():
         return LammpsRunResult(
             input_path=str(input_file),
             log_path=str(log_file),
@@ -54,15 +96,40 @@ def run_lammps_input(input_path, lammps_executable="lmp", log_path=None, timeout
             message="LAMMPS run timeout.",
         )
 
-    log_text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    log_file.write_text(log_text, encoding="utf-8", errors="ignore")
     return LammpsRunResult(
         input_path=str(input_file),
         log_path=str(log_file),
-        success=result.returncode == 0,
-        returncode=result.returncode,
-        message="ok" if result.returncode == 0 else _last_error_line(log_text),
+        success=returncode == 0,
+        returncode=returncode,
+        message="ok" if returncode == 0 else _last_error_line(log_text),
     )
+
+
+def _should_stream_line(line):
+    """筛选适合实时展示的 LAMMPS 进度行。"""
+    text = line.strip()
+    if not text:
+        return False
+
+    upper = text.upper()
+    if upper.startswith(("ERROR", "WARNING")):
+        return True
+    if text.startswith(("LAMMPS (", "Reading data file", "Loop time of", "Total wall time")):
+        return True
+    if text.startswith(("minimize", "run ", "fix             eq_", "fix             production")):
+        return True
+    if text.startswith("Step"):
+        return True
+
+    columns = text.split()
+    if len(columns) < 2:
+        return False
+    try:
+        int(columns[0])
+        float(columns[1])
+    except ValueError:
+        return False
+    return True
 
 
 def _last_error_line(log_text):

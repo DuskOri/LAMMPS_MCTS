@@ -347,6 +347,8 @@ lmp -in outputs/lammps/candidate_001_rapid_gk.in
 
 如果只关心最终低热导候选，优先查看 `outputs/low_k_database.csv`。如果要排查流程问题，则按上述文件顺序逐步检查。
 
+LAMMPS 运行时会把阶段命令、thermo 数据、警告和错误实时输出到启动程序的终端。每次 MCTS 热导评价的完整日志保存在 `outputs/mcts_feedback/eval_NNNN/lammps/rapid_gk.log`；LAMMPS 自己生成的通用 `log.lammps` 位于启动命令时的工作目录，通常是项目根目录。排错时优先查看候选目录中的 `rapid_gk.log`，它不会被下一候选的运行覆盖。
+
 前端支持清除候选序列。清除操作只重写对应 CSV 表格，不删除 `outputs/pdb/`、`outputs/systems/` 或 `outputs/lammps/` 中已经生成的结构和输入文件。需要彻底清理结构文件时，建议先手动备份再处理。
 
 ### 常见问题
