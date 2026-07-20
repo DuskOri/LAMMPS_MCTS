@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 from md_engine import (
     read_pdb_topology,
@@ -153,21 +154,36 @@ def _write_packmol_input(template_pdb, filename, output_pdb, molecule_count, box
 
 
 def _resolve_packmol(packmol_executable):
-    """定位 Packmol 可执行文件。"""
+    """优先定位当前 Python 环境中的 Packmol，再查询系统 PATH。"""
     executable = Path(packmol_executable)
     if executable.exists():
         return str(executable)
+
+    if executable.parent == Path("."):
+        environment_dir = Path(sys.executable).resolve().parent
+        candidates = [
+            environment_dir / executable.name,
+            environment_dir / f"{executable.name}.exe",
+            environment_dir / "Scripts" / executable.name,
+            environment_dir / "Scripts" / f"{executable.name}.exe",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+
     return shutil.which(packmol_executable)
 
 
 def _run_packmol(executable, input_file):
-    """运行 Packmol，优先使用新版支持的 -i 参数。"""
-    return subprocess.run(
-        [executable, "-i", str(input_file)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+    """通过标准输入运行 Packmol，兼容官方发布版和 Conda 构建。"""
+    with Path(input_file).open("r", encoding="utf-8") as input_obj:
+        return subprocess.run(
+            [executable],
+            stdin=input_obj,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
 
 
 def _packmol_path(path):

@@ -3,12 +3,14 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from generator import (
     RepeatUnitLengthEstimate,
     estimate_repeat_unit_contour_length,
     resolve_degree_of_polymerization,
 )
+from generator.packmol_runner import _resolve_packmol
 from md_engine import write_rapid_gk_input, write_uff_lammps_data_from_template
 from md_engine.lammps_runner import _should_stream_line
 from mcts import configure_fragment_registry
@@ -125,6 +127,24 @@ class RapidGreenKuboTests(unittest.TestCase):
         self.assertTrue(_should_stream_line("ERROR: test error"))
         self.assertTrue(_should_stream_line("Density plateau check: rho=1.02"))
         self.assertFalse(_should_stream_line("Pair | 18.5 | 60.8"))
+
+    def test_packmol_resolution_prefers_current_python_environment(self):
+        with TemporaryDirectory() as directory:
+            environment_dir = Path(directory)
+            environment_packmol = environment_dir / "Scripts" / "packmol.exe"
+            environment_packmol.parent.mkdir(parents=True)
+            environment_packmol.write_text("test", encoding="utf-8")
+
+            with patch(
+                "generator.packmol_runner.sys.executable",
+                str(environment_dir / "python.exe"),
+            ), patch(
+                "generator.packmol_runner.shutil.which",
+                return_value="fallback-packmol",
+            ):
+                resolved = _resolve_packmol("packmol")
+
+            self.assertEqual(resolved, str(environment_packmol))
 
     def test_uff_writer_generates_force_field_sections(self):
         with TemporaryDirectory() as directory:
