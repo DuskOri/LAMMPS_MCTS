@@ -470,7 +470,7 @@ syntax ok 23
 
 ### 工作内容
 
-- 将 `C:\DuskORI\...` 形式的本机绝对路径改为通用命令。
+- 将带 Windows 盘符的本机绝对路径改为通用命令。
 - 将 Python 运行命令统一为 `conda activate polymer_mcts` 后执行 `python main.py`。
 - 将前端启动命令统一为 `python web_server.py`。
 - 将 LAMMPS 手动运行命令改为 `lmp -in ...`。
@@ -832,9 +832,9 @@ syntax ok 23
 最近一次统计结果：
 
 ```text
-总行数：9590
+总行数：9588
 Python：4406
-Markdown：1842
+Markdown：1840
 HTML：411
 CSS：1629
 JavaScript：1122
@@ -859,3 +859,11 @@ TXT：2
 - 同步更新 `CHANGELOG.md`，按日期概括近期行为变化。
 - 发布范围只包含源码、配置、说明文档和测试，不提交 `log.lammps` 与 `outputs/` 中的本地模拟产物。
 - 发布前执行 Python 语法检查、单元测试、Git 空白错误检查和前端浏览器检查。
+
+## 2026-07-20 跨设备运行路径复核
+
+- 全文检查 README 中的 Windows 盘符、用户目录和开发机安装目录。
+- 删除使用本地绝对路径的执行示例，统一说明从项目根目录执行命令。
+- 将仓库默认 Packmol 执行器改为 `packmol`，由系统 `PATH` 解析实际安装位置。
+- 将仓库默认 LAMMPS 执行器改为 `lmp`，不再提交开发机的绝对路径。
+- 补充 `localhost` 的含义，说明它是跨平台的本机回环名称，不属于项目文件路径。

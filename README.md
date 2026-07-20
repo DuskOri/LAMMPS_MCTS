@@ -91,7 +91,7 @@ pyyaml
 - Packmol：用于生成多链初始体系。
 - LAMMPS：用于运行快速热导率计算。
 
-Packmol 和 LAMMPS 的可执行文件路径需要按本机安装位置写入 `config.yaml`。如果已经加入系统 `PATH`，可以直接写命令名：
+项目默认通过系统 `PATH` 查找 Packmol 和 LAMMPS，因此仓库配置不包含任何开发者电脑的绝对路径：
 
 ```yaml
 system:
@@ -101,15 +101,7 @@ lammps:
   executable: lmp
 ```
 
-如果没有加入 `PATH`，请改成本机绝对路径，例如：
-
-```yaml
-system:
-  packmol_executable: /path/to/packmol
-
-lammps:
-  executable: /path/to/lmp
-```
+请先在终端运行 `packmol` 和 `lmp -help`，确认两个命令能够被当前环境找到。Windows、Linux 和 macOS 均使用上述配置；如果安装包提供了不同的命令名，只需把对应字段改成实际命令名。确实无法配置系统 `PATH` 时，也可以在自己的 `config.yaml` 中填写本机可执行文件地址，但不要把个人绝对路径提交到公共仓库。
 
 ## 快速启动
 
@@ -141,11 +133,7 @@ python main.py
 
 ## 前端控制台
 
-项目提供一个轻量静态前端，目录为：
-
-```text
-frontend/
-```
+项目提供一个轻量静态前端，位于仓库的 `frontend/` 目录。
 
 启动本地前端：
 
@@ -180,7 +168,7 @@ http://localhost:8010/frontend/
 - 主程序、前端服务器和 LAMMPS 命令复制。
 - 项目内原创 Logo、聚合物流程图和功能图标。
 
-新版前端通过 `web_server.py` 提供本地 API，可以修改 `config.yaml`、保存自定义有向图，并在后台启动主流程。该服务只绑定本机使用，API key 不会写入项目文件。
+新版前端通过 `web_server.py` 提供本地 API，可以修改 `config.yaml`、保存自定义有向图，并在后台启动主流程。服务默认只绑定当前设备，API key 不会写入项目文件。`localhost` 是操作系统统一提供的本机回环名称，不是某台开发电脑的文件路径。
 
 有向图编辑器可以人工输入片段 key、SMILES、family、roles，并添加有向边。生成结果可复制或下载为 `custom_fragments.json`。API 生成器可以调用 OpenAI-compatible 接口生成片段和连接图，输出可下载为 `ai_fragments.json`。API key 只保存在浏览器当前页面，不写入项目文件。
 
@@ -366,7 +354,7 @@ lmp -in outputs/lammps/candidate_001_rapid_gk.in
 - 前端打不开：确认 `web_server.py` 是否正在运行，端口是否为 `8010`。
 - RDKit 报错：确认当前环境为 `polymer_mcts`，并且已安装 RDKit。
 - Packmol 失败：可以适当增大 `system.box_size` 或降低 `system.molecule_count`。
-- LAMMPS 没有运行：确认 `lammps.executable` 路径正确，并将 `mcts.feedback_run_lammps` 改为 `true`。
+- LAMMPS 没有运行：先确认终端可以执行 `lmp -help`，再检查 `lammps.executable` 命令名，并将 `mcts.feedback_run_lammps` 改为 `true`。
 - 没有热导率结果：先检查 `outputs/feedback_records.csv` 中是否提示缺少力场系数，再检查 LAMMPS 是否输出 `*_intra_hfacf.dat` 和 `*_kappa.dat`。
 - AI 片段不可用：确认 API key、API URL、模型名称和返回 JSON 格式是否正确。
 

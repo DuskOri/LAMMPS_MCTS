@@ -43,7 +43,7 @@ system:
   molecule_count: 4
   box_size: 45.0
   tolerance: 2.0
-  packmol_executable: C:/DuskORI/Application/miniconda/envs/polymer_mcts/Scripts/packmol.exe
+  packmol_executable: packmol
   force_field: uff_screening
 
 thermal_conductivity:
@@ -76,7 +76,7 @@ thermal_conductivity:
   trim_fraction: 0.2
 
 lammps:
-  executable: C:/DuskORI/Application/LAMMPS/bin/lmp.exe
+  executable: lmp
   timeout_seconds: 1800
 
 output:

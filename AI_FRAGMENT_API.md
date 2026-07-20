@@ -77,8 +77,9 @@ AI 必须返回 JSON：
 运行：
 
 ```powershell
-cd C:\DuskORI\Files\Code\LAMMPS_MCTS\LAMMPS_MCTS
-C:\DuskORI\Application\miniconda\envs\polymer_mcts\python.exe main.py
+cd LAMMPS_MCTS
+conda activate polymer_mcts
+python main.py
 ```
 
 流程如下：
@@ -104,4 +105,3 @@ AI 生成的片段适合扩大搜索空间，但不应不经检查直接用于�
 3. 用 `DP=1` 或 `DP=2` 做小规模 RDKit 拼接测试。
 4. 确认可建模后，再提高 DP、top_k 和 Packmol 分子数。
 5. 最终热导率结论仍以 LAMMPS 计算和后处理结果为准。
-
