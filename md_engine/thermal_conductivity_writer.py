@@ -54,9 +54,10 @@ def write_rapid_gk_input(data_file, input_file, output_prefix, params=None):
     params["sample_nevery"] = sample_nevery
     params["correlation_samples"] = correlation_samples
     params["correlation_every"] = correlation_every
-    params["production_steps"] = max(
-        int(params["production_steps"]), correlation_every
-    )
+    production_steps = max(int(params["production_steps"]), correlation_every)
+    params["production_steps"] = (
+        (production_steps + correlation_every - 1) // correlation_every
+    ) * correlation_every
 
     input_path.parent.mkdir(parents=True, exist_ok=True)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +276,7 @@ variable        kappa equal ({trap_sum})*v_scale/3.0
 fix             kappa_out all ave/time ${{d}} 1 ${{d}} v_kappa file {conductivity_file}
 fix             production all nve
 dump            trajectory all custom {params["dump_every"]} {dump_file} id mol type q x y z vx vy vz
+thermo          ${{d}}
 thermo_style    custom step temp press density etotal v_kappa
 thermo_modify   flush yes
 run             {params["production_steps"]}

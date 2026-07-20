@@ -832,9 +832,9 @@ syntax ok 23
 最近一次统计结果：
 
 ```text
-总行数：9588
-Python：4406
-Markdown：1840
+总行数：9633
+Python：4442
+Markdown：1849
 HTML：411
 CSS：1629
 JavaScript：1122
@@ -867,3 +867,11 @@ TXT：2
 - 将仓库默认 Packmol 执行器改为 `packmol`，由系统 `PATH` 解析实际安装位置。
 - 将仓库默认 LAMMPS 执行器改为 `lmp`，不再提交开发机的绝对路径。
 - 补充 `localhost` 的含义，说明它是跨平台的本机回环名称，不属于项目文件路径。
+
+## 2026-07-20 Green-Kubo 实际运行排错
+
+- 逐项检查 Packmol 输入、四分子周期盒、UFF 参数化 data、LAMMPS 输入和运行日志。
+- 确认 LAMMPS 已完成最小化、NVT 与 NPT，失败发生在 Green-Kubo 生产段。
+- 修正 `v_kappa` 被非相关窗口步读取导致的 LAMMPS compatible time 错误。
+- 生产阶段的 thermo 输出改为相关窗口整数倍，生产总步数同步向上对齐到完整窗口。
+- 增加采样时序回归测试，防止快速档参数再次生成不可运行脚本。

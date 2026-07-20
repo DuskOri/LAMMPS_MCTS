@@ -201,6 +201,40 @@ class RapidGreenKuboTests(unittest.TestCase):
             self.assertNotIn("exclude molecule/inter", script)
             self.assertNotIn("include         None", script)
 
+    def test_production_thermo_matches_correlation_window(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "parameterized.data"
+            data_file.write_text(
+                "\n".join(
+                    [
+                        "1 atoms",
+                        "1 atom types",
+                        "",
+                        "Pair Coeffs",
+                        "",
+                        "1 0.1 3.5",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            result = write_rapid_gk_input(
+                data_file,
+                root / "gk.in",
+                root / "gk",
+                params={
+                    "sample_nevery": 10,
+                    "correlation_samples": 300,
+                    "production_steps": 3500,
+                    "thermo_every": 500,
+                },
+            )
+
+            self.assertTrue(result.success)
+            script = (root / "gk.in").read_text(encoding="utf-8")
+            self.assertIn("thermo          ${d}", script)
+            self.assertIn("run             6000", script)
+
     def test_conductivity_uses_tail_average(self):
         with TemporaryDirectory() as directory:
             output = Path(directory) / "kappa.dat"

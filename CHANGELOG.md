@@ -17,6 +17,7 @@
 - 清理未使用的旧 MCTS 搜索入口、兼容属性和过期前端结果列。
 - 清除仓库默认配置中的开发机绝对路径，Packmol 和 LAMMPS 改由系统 `PATH` 查找。
 - 整理 README 的跨设备启动说明，删除本地文件路径示例。
+- 修复 Green-Kubo 生产阶段在非相关窗口步读取 `v_kappa` 导致的 LAMMPS compatible time 错误。
 
 ## 2026-07-19
 
