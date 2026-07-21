@@ -1,4 +1,4 @@
-"""重复单元状态机和快速 Green-Kubo 输入的基础检查。"""
+"""重复单元状态机和直接 NEMD 输入的基础检查。"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,7 +13,6 @@ from generator import (
 from generator.packmol_runner import _resolve_packmol
 from md_engine import (
     write_direct_nemd_input,
-    write_rapid_gk_input,
     write_uff_lammps_data_from_template,
 )
 from md_engine.lammps_runner import _should_stream_line
@@ -21,10 +20,7 @@ from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
 from mcts.state import PolymerState
-from post_process.thermal_analyzer import (
-    analyze_direct_nemd_outputs,
-    read_plateau_conductivity,
-)
+from post_process.thermal_analyzer import analyze_direct_nemd_outputs
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -125,10 +121,10 @@ class SearchProgressTests(unittest.TestCase):
         self.assertIn("score", candidate_events[-1][2]["candidate"])
 
 
-class RapidGreenKuboTests(unittest.TestCase):
+class ThermalPipelineTests(unittest.TestCase):
     def test_lammps_console_output_keeps_progress_lines(self):
         self.assertTrue(_should_stream_line("LAMMPS (22 Jul 2025)"))
-        self.assertTrue(_should_stream_line("Step Temp Press v_kappa"))
+        self.assertTrue(_should_stream_line("Step Temp Press v_Jx"))
         self.assertTrue(_should_stream_line("3000 301.2 -20.0 0.18"))
         self.assertTrue(_should_stream_line("WARNING: test warning"))
         self.assertTrue(_should_stream_line("ERROR: test error"))
@@ -177,7 +173,11 @@ class RapidGreenKuboTests(unittest.TestCase):
             self.assertIn("Pair Coeffs", data_text)
             self.assertIn("Bond Coeffs", data_text)
             self.assertIn("Angle Coeffs", data_text)
-            result = write_rapid_gk_input(data_file, root / "gk.in", root / "gk")
+            result = write_direct_nemd_input(
+                data_file,
+                root / "nemd.in",
+                root / "nemd",
+            )
             self.assertTrue(result.success, result.message)
 
     def test_topology_only_data_is_rejected(self):
@@ -188,89 +188,16 @@ class RapidGreenKuboTests(unittest.TestCase):
                 "1 atoms\n1 atom types\n1 bonds\n1 bond types\n\nMasses\n\n1 12.011\n",
                 encoding="utf-8",
             )
-            result = write_rapid_gk_input(
+            result = write_direct_nemd_input(
                 data_file,
-                root / "gk.in",
-                root / "gk",
+                root / "nemd.in",
+                root / "nemd",
             )
 
             self.assertFalse(result.success)
             self.assertIn("Pair Coeffs", result.message)
             self.assertIn("Bond Coeffs", result.message)
-            self.assertFalse((root / "gk.in").exists())
-
-    def test_parameterized_data_writes_intramolecular_hfacf(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            data_file = root / "parameterized.data"
-            data_file.write_text(
-                "\n".join(
-                    [
-                        "2 atoms",
-                        "1 bonds",
-                        "1 atom types",
-                        "1 bond types",
-                        "",
-                        "Pair Coeffs",
-                        "",
-                        "1 0.1 3.5",
-                        "",
-                        "Bond Coeffs",
-                        "",
-                        "1 300.0 1.4",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            result = write_rapid_gk_input(
-                data_file,
-                root / "gk.in",
-                root / "gk",
-                params={"molecule_count": 2, "force_field_include": None},
-            )
-
-            self.assertTrue(result.success)
-            script = (root / "gk.in").read_text(encoding="utf-8")
-            self.assertIn("group           mol_1 molecule 1", script)
-            self.assertIn("group           mol_2 molecule 2", script)
-            self.assertIn("type auto", script)
-            self.assertNotIn("pair_style      zero", script)
-            self.assertNotIn("exclude molecule/inter", script)
-            self.assertNotIn("include         None", script)
-
-    def test_production_thermo_matches_correlation_window(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            data_file = root / "parameterized.data"
-            data_file.write_text(
-                "\n".join(
-                    [
-                        "1 atoms",
-                        "1 atom types",
-                        "",
-                        "Pair Coeffs",
-                        "",
-                        "1 0.1 3.5",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            result = write_rapid_gk_input(
-                data_file,
-                root / "gk.in",
-                root / "gk",
-                params={
-                    "sample_nevery": 10,
-                    "correlation_samples": 300,
-                    "production_steps": 3500,
-                    "thermo_every": 500,
-                },
-            )
-
-            self.assertTrue(result.success)
-            script = (root / "gk.in").read_text(encoding="utf-8")
-            self.assertIn("thermo          ${d}", script)
-            self.assertIn("run             6000", script)
+            self.assertFalse((root / "nemd.in").exists())
 
     def test_density_equilibration_uses_plateau_instead_of_final_density(self):
         with TemporaryDirectory() as directory:
@@ -289,10 +216,10 @@ class RapidGreenKuboTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            result = write_rapid_gk_input(
+            result = write_direct_nemd_input(
                 data_file,
-                root / "gk.in",
-                root / "gk",
+                root / "nemd.in",
+                root / "nemd",
                 params={
                     "density_equilibration": True,
                     "precompression_density": 0.7,
@@ -304,7 +231,7 @@ class RapidGreenKuboTests(unittest.TestCase):
             )
 
             self.assertTrue(result.success)
-            script = (root / "gk.in").read_text(encoding="utf-8")
+            script = (root / "nemd.in").read_text(encoding="utf-8")
             self.assertIn("variable        rho_pre equal 0.7", script)
             self.assertIn("variable        density_loop loop 3", script)
             self.assertIn("Density plateau check", script)
@@ -312,14 +239,6 @@ class RapidGreenKuboTests(unittest.TestCase):
             self.assertIn("Density plateau reached within tolerance", script)
             self.assertIn("Density plateau was not reached", script)
             self.assertNotIn("target density = 1.1", script)
-
-    def test_conductivity_uses_tail_average(self):
-        with TemporaryDirectory() as directory:
-            output = Path(directory) / "kappa.dat"
-            output.write_text("# step kappa\n10 0.10\n20 0.20\n30 0.30\n40 0.40\n", encoding="utf-8")
-            value = read_plateau_conductivity(output, tail_fraction=0.50)
-            self.assertAlmostEqual(value, 0.35)
-
 
 class DirectNemdTests(unittest.TestCase):
     def test_writer_keeps_reference_hot_baths_and_central_heat_flux(self):

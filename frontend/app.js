@@ -107,7 +107,7 @@ function bindActions() {
   document.getElementById("refreshResultsBtn").addEventListener("click", loadResults);
   document.getElementById("candidateFilter").addEventListener("input", renderCandidateTable);
   document.getElementById("iterationsInput").addEventListener("input", updateIdleIterationTarget);
-  document.getElementById("gkProfileSelect").addEventListener("change", updateThermalProfileFields);
+  document.getElementById("thermalProfileSelect").addEventListener("change", updateThermalProfileFields);
   document.getElementById("clearSelectedCandidatesBtn").addEventListener("click", clearSelectedCandidates);
   document.getElementById("clearAllCandidatesBtn").addEventListener("click", clearAllCandidates);
 
@@ -175,7 +175,7 @@ function fillConfigForm(config) {
     ? config.active_families
     : "polyimide";
   document.getElementById("graphPresetSelect").value = activeFamily;
-  document.getElementById("gkProfileSelect").value = config.gk_profile === "standard" ? "standard" : "quick";
+  document.getElementById("thermalProfileSelect").value = config.thermal_profile === "standard" ? "standard" : "quick";
   document.getElementById("lammpsTimeoutInput").value = Number(config.timeout_seconds) || 0;
   document.getElementById("densityEquilibrationInput").checked = config.density_equilibration !== false;
   document.getElementById("precompressionDensityInput").value = Number(config.precompression_density) || 0.7;
@@ -194,7 +194,7 @@ function readConfigForm() {
     top_k: Number(document.getElementById("topKInput").value || 5),
     max_steps: Number(document.getElementById("maxStepsInput").value || 5),
     active_families: document.getElementById("graphPresetSelect").value,
-    gk_profile: document.getElementById("gkProfileSelect").value,
+    thermal_profile: document.getElementById("thermalProfileSelect").value,
     timeout_seconds: Number(document.getElementById("lammpsTimeoutInput").value || 0),
     density_equilibration: document.getElementById("densityEquilibrationInput").checked,
     precompression_density: Number(document.getElementById("precompressionDensityInput").value || 0.7),
@@ -209,7 +209,7 @@ function readConfigForm() {
 }
 
 function updateThermalProfileFields() {
-  const profile = document.getElementById("gkProfileSelect").value;
+  const profile = document.getElementById("thermalProfileSelect").value;
   const defaults = thermalProfileDefaults[profile] || thermalProfileDefaults.quick;
   document.getElementById("lammpsTimeoutInput").value = defaults.timeout;
   document.getElementById("precompressionDensityInput").value = defaults.precompressionDensity;

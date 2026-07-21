@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from generator import build_polymer_from_sequence, prepare_initial_system
-from md_engine import run_lammps_input, write_fast_tc_input
+from md_engine import run_lammps_input, write_direct_nemd_input
 from mcts.mcts_engine import default_reward
-from post_process import analyze_direct_nemd_outputs, analyze_rapid_gk_outputs
+from post_process import analyze_direct_nemd_outputs
 
 
 @dataclass
@@ -94,8 +94,6 @@ class ThermalFeedbackEvaluator:
         polymer_config = self.config["polymer"]
         system_config = self.config["system"]
         tc_config = self.config["thermal_conductivity"]
-        thermal_method = str(tc_config.get("method", "direct_nemd")).strip().lower()
-        is_direct_nemd = thermal_method in ("direct_nemd", "nemd", "langevin_nemd")
         lammps_config = self.config["lammps"]
         self._notify(
             "mcts_lammps",
@@ -134,8 +132,8 @@ class ThermalFeedbackEvaluator:
             "mcts_lammps",
             f"MCTS thermal feedback {index}: writing LAMMPS input",
         )
-        input_stem = "direct_nemd" if is_direct_nemd else "rapid_gk"
-        input_result = write_fast_tc_input(
+        input_stem = "direct_nemd"
+        input_result = write_direct_nemd_input(
             data_file=system_result.system_data_path,
             input_file=lammps_dir / f"{input_stem}.in",
             output_prefix=lammps_dir / input_stem,
@@ -143,8 +141,7 @@ class ThermalFeedbackEvaluator:
                 key: value
                 for key, value in tc_config.items()
                 if key not in ("write_fast_input", "analyze_outputs", "profile")
-            }
-            | {"molecule_count": system_result.molecule_count},
+            },
         )
         if not input_result.success:
             return self._failed(sequence, input_result.message)
@@ -182,33 +179,21 @@ class ThermalFeedbackEvaluator:
             "mcts_lammps",
             f"MCTS thermal feedback {index}: analyzing thermal output",
         )
-        if is_direct_nemd:
-            analysis = analyze_direct_nemd_outputs(
-                input_path=input_result.input_path,
-                temperature_profile_path=input_result.correlation_output,
-                heat_flux_path=input_result.conductivity_output,
-                tail_fraction=tc_config.get("trim_fraction", 0.50),
-                min_gradient_r2=tc_config.get("nemd_min_gradient_r2", 0.70),
-                min_temperature_span=tc_config.get(
-                    "nemd_min_temperature_span", 5.0
-                ),
-            )
-        else:
-            analysis = analyze_rapid_gk_outputs(
-                input_path=input_result.input_path,
-                correlation_path=input_result.correlation_output,
-                conductivity_path=input_result.conductivity_output,
-                tail_fraction=tc_config.get("trim_fraction", 0.20),
-            )
+        analysis = analyze_direct_nemd_outputs(
+            input_path=input_result.input_path,
+            temperature_profile_path=input_result.correlation_output,
+            heat_flux_path=input_result.conductivity_output,
+            tail_fraction=tc_config.get("trim_fraction", 0.50),
+            min_gradient_r2=tc_config.get("nemd_min_gradient_r2", 0.70),
+            min_temperature_span=tc_config.get("nemd_min_temperature_span", 5.0),
+        )
         if not analysis.success:
             return self._failed(sequence, analysis.message, input_result.input_path)
 
-        analysis_message = analysis.message
-        if analysis.method == "direct_nemd":
-            analysis_message = (
-                f"ok; gradient={analysis.gradient_k_per_a:.6f} K/A; "
-                f"R2={analysis.gradient_r2:.4f}"
-            )
+        analysis_message = (
+            f"ok; gradient={analysis.gradient_k_per_a:.6f} K/A; "
+            f"R2={analysis.gradient_r2:.4f}"
+        )
         return ThermalFeedbackRecord(
             sequence=list(sequence),
             reward=self._conductivity_to_reward(analysis.conductivity_w_mk),

@@ -10,8 +10,6 @@ from .thermal_conductivity_writer import (
     ThermalConductivityInputResult,
     validate_force_field_data,
     write_direct_nemd_input,
-    write_rapid_gk_input,
-    write_fast_tc_input,
 )
 from .lammps_runner import LammpsRunResult, run_lammps_input
 from .uff_data_writer import write_uff_lammps_data_from_template
@@ -25,8 +23,6 @@ __all__ = [
     "validate_force_field_data",
     "write_lammps_data",
     "write_lammps_data_from_template",
-    "write_fast_tc_input",
     "write_direct_nemd_input",
-    "write_rapid_gk_input",
     "write_uff_lammps_data_from_template",
 ]

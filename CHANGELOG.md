@@ -2,6 +2,8 @@
 
 ## 2026-07-20
 
+- 删除 Green-Kubo 输入生成、结果分析、兼容分支和专用测试，LAMMPS 热导 reward 统一使用直接 NEMD。
+- 前端和接口中的 `gk_profile` 命名改为 `thermal_profile`，计算档位只表示 NEMD 快速筛选或标准复核。
 - 将默认热导 reward 从快速 Green-Kubo 切换为参考 `in.pur.lmp` 的直接 NEMD。
 - 保留 `fix langevin` 挂在 `all` 并通过 `temp/region` 限定冷热区的写法，中央区域继续使用 `compute heat/flux` 输出 `Jx`。
 - 增加 NEMD 温度梯度拟合、热流单位换算以及温差和线性度质量门槛。

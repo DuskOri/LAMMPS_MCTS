@@ -605,13 +605,12 @@ mcts:
 
 快速热导率脚本先执行密度平衡，再进入直接 NEMD。默认过程为高温升温与熔融、疏松盒子预压缩、高温常压 NPT 密度平台检测、降温 NPT、目标温度 NPT/NVT，然后按照参考 `in.pur.lmp` 在 x 方向建立固定端、`450 K` 热源区、中央传热区和 `150 K` 冷源区。主体使用 NVE 积分，先运行稳态阶段，再同时输出中央区 `Jx` 和 `0.5 A` 分层温度。后处理拟合中间 60% 区域的温度梯度，并按 `kappa = |Jx| / |dT/dx|` 换算为 `W/(m K)`。
 
-快速档默认使用 `100000` 步稳态和 `100000` 步生产采样，要求温度梯度拟合 `R2 >= 0.70`；标准档对应参考脚本使用 `500000 + 500000` 步，并要求 `R2 >= 0.85`。两档都要求拟合区温差至少 `5 K`，否则本轮标记失败，不向 MCTS 回传伪热导率。旧 `rapid_green_kubo` 方法仍保留用于历史配置兼容，但不再作为默认 reward。
+快速档默认使用 `100000` 步稳态和 `100000` 步生产采样，要求温度梯度拟合 `R2 >= 0.70`；标准档对应参考脚本使用 `500000 + 500000` 步，并要求 `R2 >= 0.85`。两档都要求拟合区温差至少 `5 K`，否则本轮标记失败，不向 MCTS 回传伪热导率。
 
 热导流程参数位于 `thermal_conductivity` 段：
 
 ```yaml
 thermal_conductivity:
-  method: direct_nemd
   density_equilibration: true
   melt_temperature: 550.0
   precompression_density: 0.7
@@ -689,4 +688,4 @@ lmp -in outputs/lammps/candidate_001_direct_nemd.in
 
 ## 当前行数统计
 
-源码、配置和说明文件合计 `10768` 行，其中 Python `5349` 行、Markdown `1955` 行、HTML `435` 行、CSS `1684` 行、JavaScript `1146` 行，其余为 SVG、JSON、YAML 和 TXT。统计不包含 `.git/`、`outputs/` 与 `__pycache__/` 中的运行产物。
+源码、配置和说明文件合计 `10392` 行，其中 Python `4974` 行、Markdown `1965` 行、HTML `435` 行、CSS `1684` 行、JavaScript `1146` 行，其余为 SVG、JSON、YAML 和 TXT。统计不包含 `.git/`、`outputs/` 与 `__pycache__/` 中的运行产物。

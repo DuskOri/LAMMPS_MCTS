@@ -9,7 +9,7 @@ except ImportError:
     yaml = None
 
 from generator import build_polymer_from_sequence, prepare_initial_system
-from md_engine import write_fast_tc_input
+from md_engine import write_direct_nemd_input
 from mcts import MCTSEngine, ThermalFeedbackEvaluator, configure_fragment_registry
 from mcts.ai_fragment_api import generate_ai_fragment_file
 from post_process import (
@@ -79,7 +79,6 @@ DEFAULT_CONFIG = {
     "thermal_conductivity": {
         "profile": "quick",
         "write_fast_input": True,
-        "method": "direct_nemd",
         "temperature": 300.0,
         "pressure": 1.0,
         "timestep": 0.5,
@@ -100,8 +99,6 @@ DEFAULT_CONFIG = {
         "nvt_steps": 2000,
         "npt_steps": 8000,
         "production_steps": 100000,
-        "sample_nevery": 10,
-        "correlation_samples": 300,
         "nemd_hot_temperature": 450.0,
         "nemd_cold_temperature": 150.0,
         "nemd_thermostat_damp": 1.0,
@@ -288,16 +285,9 @@ def write_thermal_inputs(system_results, config):
             continue
 
         stem = Path(system_result.system_data_path).stem.replace("_system", "")
-        method = str(tc_config.get("method", "direct_nemd")).strip().lower()
-        suffix = (
-            "direct_nemd"
-            if method in ("direct_nemd", "nemd", "langevin_nemd")
-            else "rapid_gk"
-        )
-        input_file = output_dir / f"{stem}_{suffix}.in"
+        input_file = output_dir / f"{stem}_direct_nemd.in"
         output_prefix = output_dir / stem
-        params["molecule_count"] = system_result.molecule_count
-        result = write_fast_tc_input(
+        result = write_direct_nemd_input(
             data_file=system_result.system_data_path,
             input_file=input_file,
             output_prefix=output_prefix,

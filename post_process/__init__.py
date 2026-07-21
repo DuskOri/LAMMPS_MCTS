@@ -9,10 +9,9 @@ from .result_writer import (
     write_system_results_csv,
     write_thermal_input_results_csv,
 )
-from .thermal_analyzer import analyze_direct_nemd_outputs, analyze_rapid_gk_outputs
+from .thermal_analyzer import analyze_direct_nemd_outputs
 
 __all__ = [
-    "analyze_rapid_gk_outputs",
     "analyze_direct_nemd_outputs",
     "extract_sequence_features",
     "write_candidates_csv",

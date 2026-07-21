@@ -34,7 +34,6 @@ THERMAL_PROFILES = {
     "quick": {
         "system": {"molecule_count": 4, "box_size": 45.0},
         "thermal_conductivity": {
-            "method": "direct_nemd",
             "density_equilibration": True,
             "melt_temperature": 550.0,
             "melt_heating_steps": 2000,
@@ -56,8 +55,6 @@ THERMAL_PROFILES = {
             "nemd_profile_nevery": 10,
             "nemd_profile_repeat": 100,
             "nemd_min_gradient_r2": 0.70,
-            "sample_nevery": 10,
-            "correlation_samples": 300,
             "thermo_every": 500,
             "dump_every": 5000,
         },
@@ -66,7 +63,6 @@ THERMAL_PROFILES = {
     "standard": {
         "system": {"molecule_count": 10, "box_size": 60.0},
         "thermal_conductivity": {
-            "method": "direct_nemd",
             "density_equilibration": True,
             "melt_temperature": 550.0,
             "melt_heating_steps": 10000,
@@ -88,8 +84,6 @@ THERMAL_PROFILES = {
             "nemd_profile_nevery": 10,
             "nemd_profile_repeat": 100,
             "nemd_min_gradient_r2": 0.85,
-            "sample_nevery": 10,
-            "correlation_samples": 1000,
             "thermo_every": 1000,
             "dump_every": 10000,
         },
@@ -237,7 +231,7 @@ def public_config_view(config):
         "feedback_run_lammps": bool(mcts_config.get("feedback_run_lammps", False)),
         "feedback_every_iteration": bool(mcts_config.get("feedback_every_iteration", True)),
         "feedback_max_evaluations": int(mcts_config.get("feedback_max_evaluations", 0) or 0),
-        "gk_profile": str(tc_config.get("profile", "quick")),
+        "thermal_profile": str(tc_config.get("profile", "quick")),
         "density_equilibration": bool(tc_config.get("density_equilibration", True)),
         "precompression_density": float(tc_config.get("precompression_density", 0.70)),
         "density_plateau_percent": float(
@@ -279,8 +273,8 @@ def update_config(payload):
         mcts_config["feedback_every_iteration"] = bool(payload["feedback_every_iteration"])
     if "feedback_max_evaluations" in payload:
         mcts_config["feedback_max_evaluations"] = int(payload["feedback_max_evaluations"])
-    if "gk_profile" in payload:
-        apply_thermal_profile(config, str(payload["gk_profile"]))
+    if "thermal_profile" in payload:
+        apply_thermal_profile(config, str(payload["thermal_profile"]))
     if "density_equilibration" in payload:
         tc_config["density_equilibration"] = bool(payload["density_equilibration"])
     if "precompression_density" in payload:
