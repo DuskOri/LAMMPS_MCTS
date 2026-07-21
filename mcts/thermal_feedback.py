@@ -156,14 +156,46 @@ class ThermalFeedbackEvaluator:
             )
             self._notify(initial_stage, initial_message)
 
+            nemd_started = False
+            nemd_run_index = 0
+            nemd_run_target = 0
+
             def report_lammps_line(line):
+                nonlocal nemd_started, nemd_run_index, nemd_run_target
                 text = str(line).strip()
                 if text.startswith("Density plateau check"):
-                    self._notify("compress", text)
+                    self._notify("compress", text, {"console_line": text})
                 elif text.startswith("Final equilibrated density"):
+                    nemd_started = True
                     self._notify(
                         "run_lammps",
                         f"{text}; starting thermal-conductivity sampling",
+                        {"console_line": text},
+                    )
+                elif nemd_started and text.startswith("run "):
+                    fields = text.split()
+                    if len(fields) >= 2 and fields[1].isdigit():
+                        nemd_run_index += 1
+                        nemd_run_target = int(fields[1])
+                    phase = "establishing steady state" if nemd_run_index <= 1 else "sampling"
+                    self._notify(
+                        "run_lammps",
+                        f"NEMD {phase}: 0/{nemd_run_target} steps",
+                        {"console_line": text},
+                    )
+                elif nemd_started and _is_lammps_thermo_row(text):
+                    current_step = int(text.split()[0])
+                    phase = "establishing steady state" if nemd_run_index <= 1 else "sampling"
+                    self._notify(
+                        "run_lammps",
+                        f"NEMD {phase}: {current_step}/{nemd_run_target} steps",
+                        {"console_line": text},
+                    )
+                else:
+                    self._notify(
+                        "run_lammps" if nemd_started else "compress",
+                        text,
+                        {"console_line": text, "console_only": True},
                     )
 
             run_result = run_lammps_input(
@@ -229,3 +261,16 @@ class ThermalFeedbackEvaluator:
             self.progress_callback(stage, message, details or {})
         except TypeError:
             self.progress_callback(stage, message)
+
+
+def _is_lammps_thermo_row(text):
+    """Return whether a streamed line starts with numeric thermo data."""
+    fields = str(text).split()
+    if len(fields) < 2:
+        return False
+    try:
+        int(fields[0])
+        float(fields[1])
+    except ValueError:
+        return False
+    return True

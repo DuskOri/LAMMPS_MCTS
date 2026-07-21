@@ -277,6 +277,7 @@ function updateStatus(status) {
   setRunButtonState(Boolean(status.running));
   renderLoopProgress(status);
   renderLiveTopK(status);
+  renderRuntimeConsole(status);
   if (status.counts) {
     const liveCount = Array.isArray(status.live_candidates) ? status.live_candidates.length : 0;
     document.getElementById("candidateCount").textContent = status.running
@@ -285,6 +286,25 @@ function updateStatus(status) {
     document.getElementById("buildCount").textContent = status.counts.build_results || 0;
     document.getElementById("inputCount").textContent = status.counts.thermal_inputs || 0;
   }
+}
+
+function renderRuntimeConsole(status) {
+  const terminal = document.getElementById("runtimeConsole");
+  const label = document.getElementById("runtimeConsoleState");
+  if (!terminal || !label) return;
+
+  const lines = Array.isArray(status.console) ? status.console : [];
+  label.textContent = status.running ? "实时跟随" : (lines.length ? "任务已结束" : "等待任务");
+  if (!lines.length) {
+    terminal.innerHTML = '<span class="console-placeholder">启动任务后，这里会显示压缩和 NEMD 的关键输出。</span>';
+    return;
+  }
+
+  const wasNearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 48;
+  terminal.textContent = lines
+    .map((item) => `[${item.time || "--:--:--"}] ${item.text || ""}`)
+    .join("\n");
+  if (wasNearBottom || status.running) terminal.scrollTop = terminal.scrollHeight;
 }
 
 function updateIdleIterationTarget() {

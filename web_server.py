@@ -100,6 +100,7 @@ RUN_STATE = {
     "finished_at": "",
     "error": "",
     "log": [],
+    "console": [],
     "iteration": 0,
     "total_iterations": 0,
     "evaluation_count": 0,
@@ -384,6 +385,7 @@ def reset_run_state():
             "finished_at": "",
             "error": "",
             "log": [],
+            "console": [],
             "iteration": 0,
             "total_iterations": 0,
             "evaluation_count": 0,
@@ -396,6 +398,19 @@ def reset_run_state():
 def set_stage(stage, message, details=None):
     """更新当前阶段，并接收 MCTS 的轮次和实时候选事件。"""
     details = dict(details or {})
+    console_line = str(details.get("console_line", "")).rstrip()
+    if console_line:
+        RUN_STATE["console"].append(
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "text": console_line,
+            }
+        )
+        RUN_STATE["console"] = RUN_STATE["console"][-200:]
+
+    if details.get("console_only"):
+        return
+
     if "iteration" in details:
         RUN_STATE["iteration"] = int(details["iteration"])
     if "total_iterations" in details:

@@ -1439,6 +1439,62 @@ table input[type="checkbox"] {
   to { transform: rotate(360deg); }
 }
 
+.runtime-console {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #242a27;
+  border-radius: 6px;
+  background: #151917;
+}
+
+.runtime-console-bar {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 12px;
+  border-bottom: 1px solid #2d3430;
+  color: #dce5df;
+  background: #1d221f;
+  font-size: 10px;
+}
+
+.runtime-console-bar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 650;
+}
+
+.runtime-console-bar i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5bb98c;
+  box-shadow: 0 0 0 3px rgba(91, 185, 140, 0.12);
+}
+
+.runtime-console-bar small {
+  color: #8f9c95;
+}
+
+#runtimeConsole {
+  height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  color: #c9d7cf;
+  background: transparent;
+  font: 10px/1.65 Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-placeholder {
+  color: #75817a;
+}
+
 @media (max-width: 1120px) {
   .run-layout,
   .graph-layout,

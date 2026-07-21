@@ -20,6 +20,7 @@ from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
 from mcts.state import PolymerState
+from mcts.thermal_feedback import _is_lammps_thermo_row
 from post_process.thermal_analyzer import analyze_direct_nemd_outputs
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -122,6 +123,11 @@ class SearchProgressTests(unittest.TestCase):
 
 
 class ThermalPipelineTests(unittest.TestCase):
+    def test_nemd_progress_accepts_only_numeric_thermo_rows(self):
+        self.assertTrue(_is_lammps_thermo_row("70000 299.68 -561.6 0.9737"))
+        self.assertFalse(_is_lammps_thermo_row("Step Temp Press Density"))
+        self.assertFalse(_is_lammps_thermo_row("77 atoms in group bottomfix"))
+
     def test_lammps_console_output_keeps_progress_lines(self):
         self.assertTrue(_should_stream_line("LAMMPS (22 Jul 2025)"))
         self.assertTrue(_should_stream_line("Step Temp Press v_Jx"))
