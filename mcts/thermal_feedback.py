@@ -158,7 +158,7 @@ class ThermalFeedbackEvaluator:
 
             nemd_started = False
             nemd_run_index = 0
-            nemd_run_target = 0
+            nemd_run_target = int(tc_config.get("nemd_steady_steps", 0) or 0)
 
             def report_lammps_line(line):
                 nonlocal nemd_started, nemd_run_index, nemd_run_target

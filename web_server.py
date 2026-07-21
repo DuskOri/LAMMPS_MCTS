@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import main
+from md_engine import terminate_active_lammps
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -92,6 +93,12 @@ THERMAL_PROFILES = {
 }
 
 RUN_LOCK = threading.Lock()
+RUN_CANCEL_EVENT = threading.Event()
+
+
+class RunCancelled(Exception):
+    """Raised inside the background pipeline after a user cancellation."""
+
 RUN_STATE = {
     "running": False,
     "stage": "idle",
@@ -123,6 +130,8 @@ STAGE_LABELS = {
     "save": "保存结果",
     "done": "完成",
     "failed": "失败",
+    "stopping": "正在终止",
+    "stopped": "已终止",
 }
 
 
@@ -156,7 +165,7 @@ class LammpsMctsHandler(SimpleHTTPRequestHandler):
             self._send_json(load_graph_info())
             return
         if path == "/api/status":
-            self._send_json({**RUN_STATE, "counts": collect_counts()})
+            self._send_json({**RUN_STATE, "can_stop": True, "counts": collect_counts()})
             return
         if path == "/api/results":
             self._send_json(load_results())
@@ -180,6 +189,10 @@ class LammpsMctsHandler(SimpleHTTPRequestHandler):
                     update_config(payload)
                 started = start_background_run()
                 self._send_json({"ok": started, "status": RUN_STATE})
+                return
+            if path == "/api/stop":
+                result = stop_background_run()
+                self._send_json({"ok": result["requested"], **result, "status": RUN_STATE})
                 return
             if path == "/api/clear-data":
                 result = clear_output_data(payload)
@@ -374,8 +387,29 @@ def start_background_run():
         return True
 
 
+def stop_background_run():
+    """Request cancellation and terminate the active LAMMPS child process."""
+    with RUN_LOCK:
+        if not RUN_STATE["running"]:
+            return {"requested": False, "process_terminated": False}
+        RUN_CANCEL_EVENT.set()
+        RUN_STATE["stage"] = "stopping"
+        RUN_STATE["message"] = "正在终止当前任务"
+        RUN_STATE["log"].append(
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "stage": STAGE_LABELS["stopping"],
+                "message": RUN_STATE["message"],
+            }
+        )
+
+    process_terminated = terminate_active_lammps()
+    return {"requested": True, "process_terminated": process_terminated}
+
+
 def reset_run_state():
     """重置运行状态。"""
+    RUN_CANCEL_EVENT.clear()
     RUN_STATE.update(
         {
             "running": True,
@@ -398,6 +432,12 @@ def reset_run_state():
 def set_stage(stage, message, details=None):
     """更新当前阶段，并接收 MCTS 的轮次和实时候选事件。"""
     details = dict(details or {})
+    if (
+        RUN_CANCEL_EVENT.is_set()
+        and stage not in ("stopping", "stopped")
+        and not details.get("console_line")
+    ):
+        raise RunCancelled("run cancelled by user")
     console_line = str(details.get("console_line", "")).rstrip()
     if console_line:
         RUN_STATE["console"].append(
@@ -498,6 +538,9 @@ def run_pipeline():
             config,
         )
         set_stage("done", "运行完成")
+    except RunCancelled:
+        RUN_STATE["error"] = ""
+        set_stage("stopped", "任务已由用户终止")
     except Exception as exc:
         RUN_STATE["error"] = str(exc)
         set_stage("failed", f"运行失败：{exc}")

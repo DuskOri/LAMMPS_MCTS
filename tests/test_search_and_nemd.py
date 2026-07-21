@@ -2,8 +2,9 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from copy import deepcopy
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from generator import (
     RepeatUnitLengthEstimate,
@@ -16,6 +17,7 @@ from md_engine import (
     write_uff_lammps_data_from_template,
 )
 from md_engine.lammps_runner import _should_stream_line
+from md_engine import lammps_runner
 from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
@@ -24,6 +26,7 @@ from mcts.thermal_feedback import _is_lammps_thermo_row
 from post_process.thermal_analyzer import analyze_direct_nemd_outputs
 from rdkit import Chem
 from rdkit.Chem import AllChem
+import web_server
 
 
 class RepeatUnitStateTests(unittest.TestCase):
@@ -123,6 +126,30 @@ class SearchProgressTests(unittest.TestCase):
 
 
 class ThermalPipelineTests(unittest.TestCase):
+    def test_web_stop_marks_run_for_cancellation(self):
+        previous_state = deepcopy(web_server.RUN_STATE)
+        web_server.RUN_CANCEL_EVENT.clear()
+        web_server.RUN_STATE["running"] = True
+        try:
+            with patch("web_server.terminate_active_lammps", return_value=True):
+                result = web_server.stop_background_run()
+            self.assertTrue(result["requested"])
+            self.assertTrue(result["process_terminated"])
+            self.assertTrue(web_server.RUN_CANCEL_EVENT.is_set())
+            self.assertEqual(web_server.RUN_STATE["stage"], "stopping")
+        finally:
+            web_server.RUN_STATE.clear()
+            web_server.RUN_STATE.update(previous_state)
+            web_server.RUN_CANCEL_EVENT.clear()
+
+    def test_active_lammps_process_can_be_terminated(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with patch.object(lammps_runner, "_ACTIVE_PROCESS", process):
+            self.assertTrue(lammps_runner.terminate_active_lammps())
+        process.terminate.assert_called_once_with()
+
     def test_nemd_progress_accepts_only_numeric_thermo_rows(self):
         self.assertTrue(_is_lammps_thermo_row("70000 299.68 -561.6 0.9737"))
         self.assertFalse(_is_lammps_thermo_row("Step Temp Press Density"))

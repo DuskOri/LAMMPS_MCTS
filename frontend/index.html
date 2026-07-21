@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f6f4">
   <title>LAMMPS_MCTS</title>
-  <link rel="stylesheet" href="styles.css?v=20260721c">
+  <link rel="stylesheet" href="styles.css?v=20260721d">
 </head>
 <body>
   <div class="app-shell">
@@ -54,10 +54,13 @@
           <span class="topbar-label">低热导聚合物搜索</span>
           <strong>实验控制台</strong>
         </div>
-        <button id="runNowBtn" class="primary-action" type="button">
-          <span class="run-icon" aria-hidden="true"></span>
-          <span class="run-label">运行搜索</span>
-        </button>
+        <div class="topbar-actions">
+          <button id="stopRunBtn" class="stop-action" type="button" hidden disabled>终止</button>
+          <button id="runNowBtn" class="primary-action" type="button">
+            <span class="run-icon" aria-hidden="true"></span>
+            <span class="run-label">运行搜索</span>
+          </button>
+        </div>
       </header>
 
       <section id="run" class="tab-panel active">
@@ -438,6 +441,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260721b"></script>
+  <script src="app.js?v=20260722a"></script>
 </body>
 </html>

@@ -251,9 +251,15 @@ pre {
   backdrop-filter: blur(14px);
 }
 
-.topbar > div {
+.topbar > div:first-child {
   display: grid;
   gap: 1px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .topbar-label {
@@ -304,6 +310,28 @@ pre {
 .primary-action:disabled {
   cursor: wait;
   opacity: 0.72;
+}
+
+.stop-action {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #d9b4b4;
+  border-radius: 6px;
+  color: var(--danger);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.stop-action:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.stop-action:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 .run-icon {
@@ -782,6 +810,12 @@ textarea:focus {
 
 .status-badge.is-failed > span {
   background: var(--danger);
+}
+
+.status-badge.is-stopped {
+  border-color: #d9b4b4;
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .status-summary {
@@ -1644,12 +1678,17 @@ table input[type="checkbox"] {
     padding: 0 16px;
   }
 
-  .topbar > div {
+  .topbar > div:first-child {
     display: none;
   }
 
-  .primary-action {
+  .topbar-actions {
     width: 100%;
+    justify-content: flex-end;
+  }
+
+  .primary-action {
+    flex: 1 1 auto;
   }
 
   .tab-panel {

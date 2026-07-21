@@ -6,6 +6,10 @@ import subprocess
 import threading
 
 
+_ACTIVE_PROCESS = None
+_ACTIVE_PROCESS_LOCK = threading.Lock()
+
+
 @dataclass
 class LammpsRunResult:
     """记录一次 LAMMPS 运行的基本结果。"""
@@ -50,6 +54,9 @@ def run_lammps_input(
             errors="replace",
             bufsize=1,
         )
+        with _ACTIVE_PROCESS_LOCK:
+            global _ACTIVE_PROCESS
+            _ACTIVE_PROCESS = process
     except FileNotFoundError:
         return LammpsRunResult(
             input_path=str(input_file),
@@ -88,6 +95,9 @@ def run_lammps_input(
     finally:
         if timer is not None:
             timer.cancel()
+        with _ACTIVE_PROCESS_LOCK:
+            if _ACTIVE_PROCESS is process:
+                _ACTIVE_PROCESS = None
 
     log_text = "".join(lines)
     if timed_out.is_set():
@@ -151,3 +161,20 @@ def _last_error_line(log_text):
         if "ERROR" in line.upper() or "WARNING" in line.upper():
             return line
     return lines[-1] if lines else "LAMMPS run failed."
+
+
+def terminate_active_lammps(grace_seconds=3.0):
+    """Terminate the LAMMPS child process started by this Python service."""
+    with _ACTIVE_PROCESS_LOCK:
+        process = _ACTIVE_PROCESS
+
+    if process is None or process.poll() is not None:
+        return False
+
+    process.terminate()
+    try:
+        process.wait(timeout=max(float(grace_seconds), 0.1))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    return True

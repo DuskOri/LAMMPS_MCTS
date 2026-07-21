@@ -1,4 +1,6 @@
-const API_BASE = location.port === "8010" ? "" : "http://localhost:8010";
+const API_BASE = location.protocol === "http:" || location.protocol === "https:"
+  ? ""
+  : "http://localhost:8010";
 
 const state = {
   config: {},
@@ -58,7 +60,9 @@ const stageText = {
   export: "导出最终 Top K",
   save: "保存数据库",
   done: "完成",
-  failed: "失败"
+  failed: "失败",
+  stopping: "正在终止",
+  stopped: "已终止"
 };
 
 const thermalProfileDefaults = {
@@ -104,6 +108,7 @@ function bindActions() {
   document.getElementById("saveConfigBtn").addEventListener("click", saveConfig);
   document.getElementById("reloadConfigBtn").addEventListener("click", loadConfig);
   document.getElementById("runNowBtn").addEventListener("click", runPipeline);
+  document.getElementById("stopRunBtn").addEventListener("click", stopPipeline);
   document.getElementById("refreshResultsBtn").addEventListener("click", loadResults);
   document.getElementById("candidateFilter").addEventListener("input", renderCandidateTable);
   document.getElementById("iterationsInput").addEventListener("input", updateIdleIterationTarget);
@@ -251,6 +256,22 @@ async function runPipeline() {
   }
 }
 
+async function stopPipeline() {
+  const button = document.getElementById("stopRunBtn");
+  button.disabled = true;
+  try {
+    const result = await apiPost("/api/stop", {});
+    if (result.requested) {
+      showStatus("stopping", "正在终止当前任务，请稍候。");
+      startPolling();
+    } else {
+      await refreshStatus();
+    }
+  } catch (error) {
+    showStatus("failed", `终止失败：${error.message}`);
+  }
+}
+
 function startPolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(refreshStatus, 1800);
@@ -274,7 +295,11 @@ async function refreshStatus() {
 function updateStatus(status) {
   state.latestStatus = status;
   showStatus(status.stage, status.message || "");
-  setRunButtonState(Boolean(status.running));
+  setRunButtonState(
+    Boolean(status.running),
+    status.can_stop === true,
+    status.stage === "stopping"
+  );
   renderLoopProgress(status);
   renderLiveTopK(status);
   renderRuntimeConsole(status);
@@ -376,7 +401,7 @@ function showStatus(stage, message) {
   document.getElementById("statusMessage").textContent = message || "";
   const badge = document.getElementById("statusBadge");
   if (badge) {
-    badge.classList.remove("is-running", "is-done", "is-failed");
+    badge.classList.remove("is-running", "is-done", "is-failed", "is-stopped");
     const label = badge.querySelector("b");
     if (stage === "failed") {
       badge.classList.add("is-failed");
@@ -384,6 +409,9 @@ function showStatus(stage, message) {
     } else if (stage === "done") {
       badge.classList.add("is-done");
       label.textContent = "完成";
+    } else if (stage === "stopped") {
+      badge.classList.add("is-stopped");
+      label.textContent = "已终止";
     } else if (stage && stage !== "idle") {
       badge.classList.add("is-running");
       label.textContent = "运行中";
@@ -407,12 +435,15 @@ function resolveDisplayStage(stage, message) {
   return "mcts_lammps";
 }
 
-function setRunButtonState(running) {
+function setRunButtonState(running, canStop = false, stopping = false) {
   const button = document.getElementById("runNowBtn");
   const label = button.querySelector(".run-label");
   button.disabled = running;
   button.classList.toggle("is-running", running);
   label.textContent = running ? "正在运行" : "运行搜索";
+  const stopButton = document.getElementById("stopRunBtn");
+  stopButton.hidden = !canStop;
+  stopButton.disabled = !running || !canStop || stopping;
 }
 
 function renderStageList(currentStage) {

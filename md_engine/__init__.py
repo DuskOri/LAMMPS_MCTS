@@ -11,7 +11,7 @@ from .thermal_conductivity_writer import (
     validate_force_field_data,
     write_direct_nemd_input,
 )
-from .lammps_runner import LammpsRunResult, run_lammps_input
+from .lammps_runner import LammpsRunResult, run_lammps_input, terminate_active_lammps
 from .uff_data_writer import write_uff_lammps_data_from_template
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "LammpsRunResult",
     "read_pdb_topology",
     "run_lammps_input",
+    "terminate_active_lammps",
     "ThermalConductivityInputResult",
     "validate_force_field_data",
     "write_lammps_data",
