@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f6f4">
   <title>LAMMPS_MCTS</title>
-  <link rel="stylesheet" href="styles.css?v=20260721b">
+  <link rel="stylesheet" href="styles.css?v=20260721c">
 </head>
 <body>
   <div class="app-shell">
@@ -211,15 +211,16 @@
               <li data-stage="export"><span>8</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
               <li data-stage="save"><span>9</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
             </ol>
-            <div class="runtime-console" aria-live="polite">
-              <div class="runtime-console-bar">
-                <span><i></i>LAMMPS 实时输出</span>
-                <small id="runtimeConsoleState">等待任务</small>
-              </div>
-              <pre id="runtimeConsole"><span class="console-placeholder">启动任务后，这里会显示压缩和 NEMD 的关键输出。</span></pre>
-            </div>
           </section>
         </div>
+
+        <section class="runtime-console" aria-live="polite">
+          <div class="runtime-console-bar">
+            <span><i></i>LAMMPS 实时输出</span>
+            <small id="runtimeConsoleState">等待任务</small>
+          </div>
+          <pre id="runtimeConsole"><span class="console-placeholder">启动任务后，这里会显示压缩和 NEMD 的关键输出。</span></pre>
+        </section>
 
         <section class="results-section">
           <div class="section-heading section-heading-row">

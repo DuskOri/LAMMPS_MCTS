@@ -428,7 +428,7 @@ pre {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(320px, 0.85fr);
   gap: 20px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .panel {
@@ -1440,7 +1440,7 @@ table input[type="checkbox"] {
 }
 
 .runtime-console {
-  margin-top: 18px;
+  margin-top: 20px;
   overflow: hidden;
   border: 1px solid #242a27;
   border-radius: 6px;
