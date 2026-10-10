@@ -36,19 +36,17 @@ class PolymerState:
 
     def is_terminal(self):
         """选择 End 后，一个重复单元才算构建完成。"""
-        return self.current_fragment == "End"
+        return self.current_fragment == "End" or not self.legal_actions()
 
     def legal_actions(self):
         """给出当前状态还能选择的下一步片段。"""
-        if self.is_terminal():
+        if self.current_fragment == "End":
             return []
 
         if len(self.repeat_unit_fragments) >= self.max_steps:
-            return ["End"]
+            return ["End"] if "End" in get_allowed_fragments(self.current_fragment) else []
 
         actions = get_allowed_fragments(self.current_fragment)
-        if not actions and self.repeat_unit_fragments:
-            return ["End"]
         return list(actions)
 
     def take_action(self, action):
@@ -61,5 +59,5 @@ class PolymerState:
         """转换为聚合物生成模块需要的输出格式。"""
         fragments = self.fragments
         if not fragments or fragments[-1] != "End":
-            fragments = fragments + ["End"]
+            raise ValueError("incomplete or dead-end repeat unit")
         return fragments

@@ -117,42 +117,70 @@
                   <option value="custom">自定义片段</option>
                 </select>
               </label>
-              <label class="field">
-                <span>NEMD 计算档位</span>
-                <select id="thermalProfileSelect">
-                  <option value="quick">快速筛选</option>
-                  <option value="standard">标准复核</option>
-                </select>
-                <small>快速档用于 MCTS 初筛</small>
-              </label>
-              <label class="field">
-                <span>LAMMPS 超时 (秒)</span>
-                <input id="lammpsTimeoutInput" type="number" min="0" step="60" value="1800">
-                <small>0 表示不限制时间</small>
-              </label>
-              <label class="field toggle-field">
-                <span>密度平台平衡</span>
-                <span class="toggle-row">
-                  <input id="densityEquilibrationInput" type="checkbox" checked>
-                  <span class="toggle-track" aria-hidden="true"><span></span></span>
-                  <small>熔融后由 NPT 自动寻找稳定密度</small>
-                </span>
-              </label>
-              <label class="field">
-                <span>预压缩密度 (g/cm³)</span>
-                <input id="precompressionDensityInput" type="number" min="0.05" max="2" step="0.05" value="0.7">
-                <small>只用于消除初始大空隙</small>
-              </label>
-              <label class="field">
-                <span>密度平台阈值 (%)</span>
-                <input id="densityPlateauPercentInput" type="number" min="0.01" max="20" step="0.1" value="5">
-                <small>连续三个窗口的相对波动</small>
-              </label>
-              <label class="field">
-                <span>最大密度窗口数</span>
-                <input id="densityMaxBlocksInput" type="number" min="3" max="100" step="1" value="10">
-                <small>达到上限时日志会明确警告</small>
-              </label>
+            </div>
+
+            <div class="simulation-settings-grid">
+              <fieldset class="simulation-settings-group">
+                <legend><span>压缩</span><small>熔融、密度平台与常温平衡</small></legend>
+                <div class="mini-form-grid">
+                  <label class="field toggle-field field-wide">
+                    <span>密度平台平衡</span>
+                    <span class="toggle-row">
+                      <input id="densityEquilibrationInput" type="checkbox" checked>
+                      <span class="toggle-track" aria-hidden="true"><span></span></span>
+                      <small>熔融后由 NPT 自动寻找稳定密度</small>
+                    </span>
+                  </label>
+                  <label class="field">
+                    <span>预压缩密度 (g/cm³)</span>
+                    <input id="precompressionDensityInput" type="number" min="0.05" max="2" step="0.05" value="0.7">
+                    <small>只用于消除初始大空隙</small>
+                  </label>
+                  <label class="field">
+                    <span>密度平台阈值 (%)</span>
+                    <input id="densityPlateauPercentInput" type="number" min="0.01" max="20" step="0.1" value="5">
+                    <small>连续三个窗口的相对波动</small>
+                  </label>
+                  <label class="field">
+                    <span>最大密度窗口数</span>
+                    <input id="densityMaxBlocksInput" type="number" min="3" max="100" step="1" value="10">
+                  </label>
+                  <label class="field">
+                    <span>压缩超时 (秒)</span>
+                    <input id="compressionTimeoutInput" type="number" min="0" step="60" value="1800">
+                    <small>0 表示不限制时间</small>
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset class="simulation-settings-group">
+                <legend><span>NEMD</span><small>稳态建立与热流分块采样</small></legend>
+                <div class="mini-form-grid">
+                  <label class="field">
+                    <span>计算档位</span>
+                    <select id="thermalProfileSelect">
+                      <option value="quick">快速筛选</option>
+                      <option value="standard">标准复核</option>
+                    </select>
+                    <small>选择后自动填入本组建议值</small>
+                  </label>
+                  <label class="field">
+                    <span>NEMD 超时 (秒)</span>
+                    <input id="nemdTimeoutInput" type="number" min="0" step="60" value="1800">
+                    <small>0 表示不限制时间</small>
+                  </label>
+                  <label class="field">
+                    <span>生产步数上限</span>
+                    <input id="productionStepsInput" type="number" min="1000" step="1000" value="100000">
+                    <small>收敛时会提前结束</small>
+                  </label>
+                  <label class="field">
+                    <span>热流收敛阈值 (%)</span>
+                    <input id="heatFluxToleranceInput" type="number" min="0.01" max="100" step="0.1" value="15">
+                    <small>最近三个热流窗口的相对波动</small>
+                  </label>
+                </div>
+              </fieldset>
             </div>
 
             <fieldset class="mode-fieldset">
@@ -176,6 +204,11 @@
                 </label>
               </div>
             </fieldset>
+
+            <details class="effective-parameters">
+              <summary>已保存的计算参数</summary>
+              <dl id="effectiveParameters"></dl>
+            </details>
 
             <div class="button-row panel-actions">
               <button id="saveConfigBtn" class="button button-solid" type="button">保存参数</button>
@@ -207,9 +240,9 @@
               <li data-stage="search"><span>1</span><div><strong>MCTS 选择</strong><small>生成本轮完整重复单元</small></div></li>
               <li data-stage="build"><span>2</span><div><strong>RDKit 建链</strong><small>自动计算 DP 并生成结构</small></div></li>
               <li data-stage="packmol"><span>3</span><div><strong>Packmol 装箱</strong><small>建立多链初始体系</small></div></li>
-              <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>写出冷热区 NEMD 计算文件</small></div></li>
+              <li data-stage="write_lammps"><span>4</span><div><strong>LAMMPS 输入</strong><small>分别写出压缩与 NEMD 计算文件</small></div></li>
               <li data-stage="compress"><span>5</span><div><strong>体系压缩</strong><small>高温熔融、预压缩并寻找密度平台</small></div></li>
-              <li data-stage="run_lammps"><span>6</span><div><strong>直接 NEMD</strong><small>建立温度梯度并采样中央区热流</small></div></li>
+              <li data-stage="run_lammps"><span>6</span><div><strong>直接 NEMD</strong><small>分块采样，热流收敛后自动结束</small></div></li>
               <li data-stage="mcts_lammps"><span>7</span><div><strong>Reward 回传</strong><small>热导率转换为奖励并回传</small></div></li>
               <li data-stage="export"><span>8</span><div><strong>导出最终 Top K</strong><small>整理结构、体系和输入文件</small></div></li>
               <li data-stage="save"><span>9</span><div><strong>保存结果</strong><small>更新候选数据库</small></div></li>
@@ -223,6 +256,42 @@
             <small id="runtimeConsoleState">等待任务</small>
           </div>
           <pre id="runtimeConsole"><span class="console-placeholder">启动任务后，这里会显示压缩和 NEMD 的关键输出。</span></pre>
+        </section>
+
+        <section class="telemetry-grid" aria-label="模拟实时曲线">
+          <article class="telemetry-card">
+            <div class="telemetry-heading">
+              <div><strong>密度</strong><span>压缩与密度平台</span></div>
+              <b id="densityChartValue">等待数据</b>
+            </div>
+            <div class="telemetry-chart">
+              <svg id="densityChart" viewBox="0 0 520 180" preserveAspectRatio="none" role="img" aria-label="密度随时间步变化曲线">
+                <line class="chart-grid-line" x1="12" y1="45" x2="508" y2="45"></line>
+                <line class="chart-grid-line" x1="12" y1="90" x2="508" y2="90"></line>
+                <line class="chart-grid-line" x1="12" y1="135" x2="508" y2="135"></line>
+                <path class="telemetry-line density-line" d=""></path>
+              </svg>
+              <span id="densityChartEmpty" class="chart-empty">压缩开始后显示</span>
+            </div>
+            <div class="telemetry-meta"><span id="densityChartRange">--</span><span>g/cm³</span></div>
+          </article>
+
+          <article class="telemetry-card">
+            <div class="telemetry-heading">
+              <div><strong>热流</strong><span>NEMD 生产采样</span></div>
+              <b id="heatFluxChartValue">等待数据</b>
+            </div>
+            <div class="telemetry-chart">
+              <svg id="heatFluxChart" viewBox="0 0 520 180" preserveAspectRatio="none" role="img" aria-label="热流随时间步变化曲线">
+                <line class="chart-grid-line" x1="12" y1="45" x2="508" y2="45"></line>
+                <line class="chart-grid-line" x1="12" y1="90" x2="508" y2="90"></line>
+                <line class="chart-grid-line" x1="12" y1="135" x2="508" y2="135"></line>
+                <path class="telemetry-line heat-flux-line" d=""></path>
+              </svg>
+              <span id="heatFluxChartEmpty" class="chart-empty">NEMD 生产阶段开始后显示</span>
+            </div>
+            <div class="telemetry-meta"><span id="heatFluxChartRange">--</span><span>LAMMPS units</span></div>
+          </article>
         </section>
 
         <section class="results-section">
@@ -441,6 +510,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260722a"></script>
+  <script src="app.js?v=20260722d"></script>
 </body>
 </html>

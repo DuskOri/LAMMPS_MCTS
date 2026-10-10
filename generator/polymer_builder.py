@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import math
 from pathlib import Path
+from md_engine.process_control import PipelineCancelled, raise_if_cancelled
 
 try:
     from rdkit import Chem
@@ -58,6 +59,23 @@ def normalize_sequence(sequence):
 
 
 def build_polymer_from_sequence(
+    sequence, dp=None, target_length_angstrom=120.0, min_dp=1, max_dp=100,
+    output_dir="outputs", name="candidate",
+):
+    """A bad chemical candidate must not abort the rest of the search."""
+    raise_if_cancelled()
+    try:
+        return _build_polymer_from_sequence(
+            sequence, dp=dp, target_length_angstrom=target_length_angstrom,
+            min_dp=min_dp, max_dp=max_dp, output_dir=output_dir, name=name,
+        )
+    except PipelineCancelled:
+        raise
+    except (ValueError, RuntimeError, OSError) as error:
+        return PolymerBuildResult(list(sequence), 0, "", "", False, str(error))
+
+
+def _build_polymer_from_sequence(
     sequence,
     dp=None,
     target_length_angstrom=120.0,
@@ -165,8 +183,9 @@ def build_polymer_from_sequence(
     smiles = Chem.MolToSmiles(capped_polymer)
     mol_file = output_path / f"{name}.mol"
     pdb_file = output_path / f"{name}.pdb"
-    Chem.MolToMolFile(capped_polymer, str(mol_file))
     saved = save_pdb(capped_polymer, str(pdb_file))
+    if saved:
+        Chem.MolToMolFile(capped_polymer, str(mol_file))
 
     return PolymerBuildResult(
         sequence=normalized,

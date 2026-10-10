@@ -11,13 +11,16 @@ from generator import (
     estimate_repeat_unit_contour_length,
     resolve_degree_of_polymerization,
 )
-from generator.packmol_runner import _resolve_packmol
+from generator.packmol_runner import _resolve_packmol, _run_packmol
 from md_engine import (
+    write_adaptive_nemd_input,
+    write_compression_input,
     write_direct_nemd_input,
     write_uff_lammps_data_from_template,
 )
 from md_engine.lammps_runner import _should_stream_line
 from md_engine import lammps_runner
+from md_engine.process_control import reset_cancellation
 from mcts import configure_fragment_registry
 from mcts.Poly_Build import build_poly_chain
 from mcts.mcts_engine import MCTSEngine
@@ -35,7 +38,7 @@ class RepeatUnitStateTests(unittest.TestCase):
 
     def test_end_does_not_count_as_repeat_unit_fragment(self):
         state = PolymerState(max_steps=5)
-        for action in ("A", "B", "A", "B", "A"):
+        for action in ("A", "B", "A", "B", "B"):
             state = state.take_action(action)
 
         self.assertFalse(state.is_terminal())
@@ -126,6 +129,60 @@ class SearchProgressTests(unittest.TestCase):
 
 
 class ThermalPipelineTests(unittest.TestCase):
+    def setUp(self):
+        reset_cancellation()
+
+    def tearDown(self):
+        reset_cancellation()
+
+    def test_public_config_exposes_independent_stage_timeouts_and_nemd_limits(self):
+        config = {
+            "mcts": {},
+            "polymer": {},
+            "chemistry": {},
+            "thermal_conductivity": {
+                "production_steps": 500000,
+                "nemd_heat_flux_tolerance": 0.08,
+            },
+            "lammps": {
+                "timeout_seconds": 1800,
+                "compression_timeout_seconds": 3600,
+                "nemd_timeout_seconds": 7200,
+            },
+        }
+        public = web_server.public_config_view(config)
+        self.assertEqual(public["compression_timeout_seconds"], 3600)
+        self.assertEqual(public["nemd_timeout_seconds"], 7200)
+        self.assertEqual(public["production_steps"], 500000)
+        self.assertEqual(public["heat_flux_tolerance_percent"], 8.0)
+
+    def test_lammps_series_reader_ignores_headers_and_limits_points(self):
+        with TemporaryDirectory() as tmpdir:
+            series_file = Path(tmpdir) / "density.dat"
+            series_file.write_text(
+                "# TimeStep v_rho_now\n0 0.71\n100 0.74\ninvalid row\n200 0.76\n",
+                encoding="utf-8",
+            )
+            points = web_server.read_lammps_series(series_file, max_points=2)
+
+        self.assertEqual(len(points), 2)
+        self.assertEqual(points[-1], {"step": 200.0, "value": 0.76})
+
+    def test_packmol_output_is_streamed_to_the_windows_terminal(self):
+        process = Mock()
+        process.stdout.readline.side_effect = ["Packmol starts\n", "Success!\n", ""]
+        process.wait.return_value = 0
+        with TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "packmol.inp"
+            input_file.write_text("tolerance 2.0\n", encoding="utf-8")
+            with patch("generator.packmol_runner.subprocess.Popen", return_value=process):
+                with patch("builtins.print") as print_mock:
+                    result = _run_packmol("packmol", input_file)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Success!", result.stdout)
+        print_mock.assert_any_call("[PACKMOL] Success!", flush=True)
+
     def test_web_stop_marks_run_for_cancellation(self):
         previous_state = deepcopy(web_server.RUN_STATE)
         web_server.RUN_CANCEL_EVENT.clear()
@@ -232,6 +289,21 @@ class ThermalPipelineTests(unittest.TestCase):
             self.assertIn("Bond Coeffs", result.message)
             self.assertFalse((root / "nemd.in").exists())
 
+    def test_lammps_write_data_section_comments_are_accepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "compressed.data"
+            data_file.write_text(
+                "1 atoms\n1 atom types\n\nPair Coeffs # lj/cut\n\n1 0.1 3.5\n",
+                encoding="utf-8",
+            )
+            result = write_adaptive_nemd_input(
+                data_file,
+                root / "nemd.in",
+                root / "nemd",
+            )
+            self.assertTrue(result.success, result.message)
+
     def test_density_equilibration_uses_plateau_instead_of_final_density(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -274,6 +346,48 @@ class ThermalPipelineTests(unittest.TestCase):
             self.assertNotIn("target density = 1.1", script)
 
 class DirectNemdTests(unittest.TestCase):
+    def test_split_jobs_archive_compressed_data_and_use_adaptive_production(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_file = root / "initial.data"
+            data_file.write_text(
+                "1 atoms\n1 atom types\n\nPair Coeffs\n\n1 0.1 3.5\n",
+                encoding="utf-8",
+            )
+            compression = write_compression_input(
+                data_file,
+                root / "compression.in",
+                root / "compressed.data",
+                root / "compression",
+            )
+            self.assertTrue(compression.success, compression.message)
+            compression_script = (root / "compression.in").read_text(encoding="utf-8")
+            self.assertIn("write_data      ", compression_script)
+            self.assertIn("compressed.data", compression_script)
+
+            # The compressed file is produced by LAMMPS; use the parameterized
+            # input as a stand-in while checking the generated NEMD commands.
+            nemd = write_adaptive_nemd_input(
+                data_file,
+                root / "nemd.in",
+                root / "nemd",
+                params={
+                    "nemd_steady_steps": 50000,
+                    "production_steps": 500000,
+                    "nemd_production_block_steps": 25000,
+                    "nemd_min_production_blocks": 5,
+                    "nemd_heat_flux_tolerance": 0.08,
+                },
+            )
+            self.assertTrue(nemd.success, nemd.message)
+            script = (root / "nemd.in").read_text(encoding="utf-8")
+            self.assertIn("NEMD steady state starts: 50000 steps", script)
+            self.assertIn("minimum=5 blocks, maximum=19 blocks", script)
+            self.assertIn("Heat flux convergence check", script)
+            self.assertIn("jump SELF heat_flux_converged", script)
+            self.assertIn("Heat flux converged; production sampling stopped early", script)
+            self.assertIn("nemd_final.data", script)
+
     def test_writer_keeps_reference_hot_baths_and_central_heat_flux(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -286,15 +400,17 @@ class DirectNemdTests(unittest.TestCase):
                 data_file,
                 root / "nemd.in",
                 root / "nemd",
-                params={"nemd_steady_steps": 1000, "production_steps": 2000},
+                params={"nemd_steady_steps": 1000, "production_steps": 50000},
             )
 
             self.assertTrue(result.success, result.message)
             script = (root / "nemd.in").read_text(encoding="utf-8")
             self.assertIn("fix             fhot all langevin", script)
             self.assertIn("fix_modify      fhot temp Thot", script)
-            self.assertIn("compute         heat_flux flux heat/flux", script)
+            self.assertIn("compute         regional_flux all reduce sum v_local_Jx", script)
+            self.assertIn("compute         stressBond all centroid/stress/atom", script)
             self.assertIn("compute         layers all chunk/atom bin/1d x", script)
+            self.assertIn("Heat flux convergence check", script)
             self.assertNotIn("thermal/conductivity", script)
 
     def test_analyzer_uses_heat_flux_over_linear_temperature_gradient(self):

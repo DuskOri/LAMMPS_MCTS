@@ -2,6 +2,7 @@
 
 import csv
 from pathlib import Path
+from run_storage import atomic_file
 
 from .feature_extractor import extract_sequence_features
 
@@ -111,6 +112,12 @@ def write_mcts_feedback_records_csv(records, filename):
                 "success": record.success,
                 "message": record.message,
                 "input_path": record.input_path,
+                "run_id": record.run_id,
+                "evaluation_id": record.evaluation_id,
+                "metadata_path": record.metadata_path,
+                "relative_error": record.relative_error,
+                "energy_balance_error": record.energy_balance_error,
+                "flux_agreement_error": record.flux_agreement_error,
             }
         )
     _write_rows(rows, filename)
@@ -140,6 +147,12 @@ def write_search_low_k_database_csv(candidates, records, filename):
             "success": record.success if record is not None else "",
             "message": record.message if record is not None else "ranked by MCTS reward",
             "input_path": record.input_path if record is not None else "",
+            "run_id": record.run_id if record is not None else "",
+            "evaluation_id": record.evaluation_id if record is not None else "",
+            "metadata_path": record.metadata_path if record is not None else "",
+            "relative_error": record.relative_error if record is not None else "",
+            "energy_balance_error": record.energy_balance_error if record is not None else "",
+            "flux_agreement_error": record.flux_agreement_error if record is not None else "",
         }
         row.update(extract_sequence_features(sequence))
         rows.append(row)
@@ -153,10 +166,11 @@ def _write_rows(rows, filename):
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     if not rows:
-        output_file.write_text("", encoding="utf-8")
+        with atomic_file(output_file):
+            pass
         return
 
-    with output_file.open("w", newline="", encoding="utf-8") as file_obj:
+    with atomic_file(output_file, newline="") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)

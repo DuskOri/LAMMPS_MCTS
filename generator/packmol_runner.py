@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
+from md_engine.process_control import register_process, unregister_process, close_process, raise_if_cancelled
 
 from md_engine import (
     read_pdb_topology,
@@ -39,8 +41,12 @@ def prepare_initial_system(
     packmol_executable="packmol",
     template_mol=None,
     force_field="uff_screening",
+    timeout=600,
 ):
     """由单链 PDB 生成单链 data，并尝试通过 Packmol 生成多链初始体系。"""
+    raise_if_cancelled()
+    if int(molecule_count) < 1 or float(box_size) <= 0 or float(tolerance) <= 0:
+        raise ValueError("Packmol molecule count, box size and tolerance must be positive")
     template_path = Path(template_pdb)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -75,7 +81,9 @@ def prepare_initial_system(
             message="Packmol executable not found.",
         )
 
-    run_result = _run_packmol(executable, packmol_input)
+    if packed_pdb.exists():
+        raise ValueError(f"Refusing to reuse an existing packed structure: {packed_pdb}")
+    run_result = _run_packmol(executable, packmol_input, timeout=timeout)
     if run_result.returncode != 0:
         return InitialSystemResult(
             template_pdb=str(template_path),
@@ -174,18 +182,55 @@ def _resolve_packmol(packmol_executable):
     return shutil.which(packmol_executable)
 
 
-def _run_packmol(executable, input_file):
-    """通过标准输入运行 Packmol，兼容官方发布版和 Conda 构建。"""
+def _run_packmol(executable, input_file, timeout=600):
+    """通过标准输入运行 Packmol，并把运行过程同步打印到命令行。"""
+    raise_if_cancelled()
     with Path(input_file).open("r", encoding="utf-8") as input_obj:
-        return subprocess.run(
+        process = subprocess.Popen(
             [executable],
             stdin=input_obj,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        register_process(process)
+        timed_out = threading.Event()
+        def expire():
+            if process.poll() is None:
+                timed_out.set()
+                close_process(process)
+        timer = threading.Timer(float(timeout), expire) if timeout and float(timeout) > 0 else None
+        if timer:
+            timer.daemon = True
+            timer.start()
+        lines = []
+        try:
+            for line in iter(process.stdout.readline, ""):
+                lines.append(line)
+                if line.rstrip():
+                    print(f"[PACKMOL] {line.rstrip()}", flush=True)
+            returncode = process.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            close_process(process)
+            process.stdout.close()
+            unregister_process(process)
+        raise_if_cancelled()
+        if timed_out.is_set():
+            returncode = 124
+            lines.append("Packmol run timeout.")
+        return subprocess.CompletedProcess(
+            args=[executable],
+            returncode=returncode,
+            stdout="".join(lines),
+            stderr="",
         )
 
 
 def _packmol_path(path):
     """Packmol 输入中统一使用正斜杠路径。"""
-    return Path(path).resolve().as_posix()
+    return '"' + Path(path).resolve().as_posix() + '"'

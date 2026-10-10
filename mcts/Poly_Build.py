@@ -2,6 +2,7 @@
 # 由MCTS算法输出的聚合物片段序列，构建成真实的聚合物分子，并保存为PDB文件
 
 import os
+from md_engine.process_control import raise_if_cancelled
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -50,7 +51,10 @@ def build_poly_chain(fragment_list, dp=10):
 
     # 5. 循环拼接剩下的片段
     for frag_name in full_chain[1:]:
+        raise_if_cancelled()
         next_mol = Chem.MolFromSmiles(smiles_map[frag_name])
+        if next_mol is None:
+            raise ValueError(f"cannot parse fragment {frag_name}")
         
         # 运行反应，这会返回一个产物列表
         products = deicide.RunReactants((chain_mol, next_mol))

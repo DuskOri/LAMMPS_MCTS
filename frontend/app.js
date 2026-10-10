@@ -18,6 +18,7 @@ const state = {
   pollTimer: null,
   latestStatus: null
 };
+let sessionToken = "";
 
 const ROLE_OPTIONS = [
   "rigid",
@@ -67,13 +68,19 @@ const stageText = {
 
 const thermalProfileDefaults = {
   quick: {
-    timeout: 1800,
+    compressionTimeout: 1800,
+    nemdTimeout: 1800,
+    productionSteps: 100000,
+    heatFluxTolerancePercent: 15,
     precompressionDensity: 0.7,
     densityPlateauPercent: 5,
     densityMaxBlocks: 10
   },
   standard: {
-    timeout: 7200,
+    compressionTimeout: 3600,
+    nemdTimeout: 7200,
+    productionSteps: 500000,
+    heatFluxTolerancePercent: 8,
     precompressionDensity: 0.7,
     densityPlateauPercent: 2,
     densityMaxBlocks: 20
@@ -141,6 +148,12 @@ async function loadInitialData() {
   renderCommands();
   renderRoleChips();
   updateRoleHelperText();
+  try {
+    const graphInfo = await apiGet("/api/graphs");
+    if (Array.isArray(graphInfo.custom?.fragments)) state.graphDraft = graphInfo.custom;
+  } catch (error) {
+    showStatus("failed", "无法读取已保存的片段图");
+  }
   renderGraphEditor();
 }
 
@@ -151,13 +164,16 @@ async function apiGet(path) {
 }
 
 async function apiPost(path, payload) {
+  if (!sessionToken) sessionToken = (await apiGet("/api/session")).token;
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": sessionToken },
     body: JSON.stringify(payload || {})
   });
   if (!response.ok) throw new Error(`POST ${path} failed`);
-  return response.json();
+  const result = await response.json();
+  if (result.ok === false) throw new Error(result.error || "操作未执行，任务可能已在运行");
+  return result;
 }
 
 async function loadConfig() {
@@ -170,18 +186,37 @@ async function loadConfig() {
 }
 
 function fillConfigForm(config) {
+  const effective = document.getElementById("effectiveParameters");
+  effective.replaceChildren();
+  Object.entries(config.effective_parameters || {}).forEach(([label, value]) => {
+    const term = document.createElement("dt");
+    const description = document.createElement("dd");
+    term.textContent = label;
+    description.textContent = String(value);
+    effective.append(term, description);
+  });
   document.getElementById("targetLengthInput").value = config.target_length_angstrom || 120;
   document.getElementById("iterationsInput").value = config.iterations || 300;
   document.getElementById("explorationWeightInput").value = config.exploration_weight || 1.41421356237;
   document.getElementById("topKInput").value = config.top_k || 5;
   document.getElementById("maxStepsInput").value = config.max_steps || 5;
   const builtinFamilies = ["polyimide", "polyurethane", "phenolic", "custom"];
-  const activeFamily = builtinFamilies.includes(config.active_families)
-    ? config.active_families
-    : "polyimide";
-  document.getElementById("graphPresetSelect").value = activeFamily;
+  const activeFamily = config.active_families || "polyimide";
+  const presetSelect = document.getElementById("graphPresetSelect");
+  presetSelect.querySelectorAll("option[data-combined]").forEach((option) => option.remove());
+  if (!builtinFamilies.includes(activeFamily)) {
+    const option = document.createElement("option");
+    option.value = activeFamily;
+    option.textContent = activeFamily;
+    option.dataset.combined = "true";
+    presetSelect.appendChild(option);
+  }
+  presetSelect.value = activeFamily;
   document.getElementById("thermalProfileSelect").value = config.thermal_profile === "standard" ? "standard" : "quick";
-  document.getElementById("lammpsTimeoutInput").value = Number(config.timeout_seconds) || 0;
+  document.getElementById("compressionTimeoutInput").value = Number(config.compression_timeout_seconds) || 0;
+  document.getElementById("nemdTimeoutInput").value = Number(config.nemd_timeout_seconds) || 0;
+  document.getElementById("productionStepsInput").value = Number(config.production_steps) || 100000;
+  document.getElementById("heatFluxToleranceInput").value = Number(config.heat_flux_tolerance_percent) || 15;
   document.getElementById("densityEquilibrationInput").checked = config.density_equilibration !== false;
   document.getElementById("precompressionDensityInput").value = Number(config.precompression_density) || 0.7;
   document.getElementById("densityPlateauPercentInput").value = Number(config.density_plateau_percent) || 5;
@@ -200,7 +235,10 @@ function readConfigForm() {
     max_steps: Number(document.getElementById("maxStepsInput").value || 5),
     active_families: document.getElementById("graphPresetSelect").value,
     thermal_profile: document.getElementById("thermalProfileSelect").value,
-    timeout_seconds: Number(document.getElementById("lammpsTimeoutInput").value || 0),
+    compression_timeout_seconds: Number(document.getElementById("compressionTimeoutInput").value || 0),
+    nemd_timeout_seconds: Number(document.getElementById("nemdTimeoutInput").value || 0),
+    production_steps: Number(document.getElementById("productionStepsInput").value || 100000),
+    heat_flux_tolerance_percent: Number(document.getElementById("heatFluxToleranceInput").value || 15),
     density_equilibration: document.getElementById("densityEquilibrationInput").checked,
     precompression_density: Number(document.getElementById("precompressionDensityInput").value || 0.7),
     density_plateau_percent: Number(document.getElementById("densityPlateauPercentInput").value || 5),
@@ -216,7 +254,10 @@ function readConfigForm() {
 function updateThermalProfileFields() {
   const profile = document.getElementById("thermalProfileSelect").value;
   const defaults = thermalProfileDefaults[profile] || thermalProfileDefaults.quick;
-  document.getElementById("lammpsTimeoutInput").value = defaults.timeout;
+  document.getElementById("compressionTimeoutInput").value = defaults.compressionTimeout;
+  document.getElementById("nemdTimeoutInput").value = defaults.nemdTimeout;
+  document.getElementById("productionStepsInput").value = defaults.productionSteps;
+  document.getElementById("heatFluxToleranceInput").value = defaults.heatFluxTolerancePercent;
   document.getElementById("precompressionDensityInput").value = defaults.precompressionDensity;
   document.getElementById("densityPlateauPercentInput").value = defaults.densityPlateauPercent;
   document.getElementById("densityMaxBlocksInput").value = defaults.densityMaxBlocks;
@@ -239,6 +280,7 @@ async function saveConfig() {
   try {
     const result = await apiPost("/api/config", payload);
     state.config = result.config;
+    fillConfigForm(state.config);
     showStatus("idle", "参数已保存，可以运行。");
   } catch (error) {
     showStatus("failed", `保存失败：${error.message}`);
@@ -249,6 +291,7 @@ async function runPipeline() {
   const payload = readConfigForm();
   try {
     await apiPost("/api/run", payload);
+    await loadConfig();
     showStatus("search", "已启动，正在搜索。");
     startPolling();
   } catch (error) {
@@ -282,6 +325,9 @@ async function refreshStatus() {
   try {
     const status = await apiGet("/api/status");
     updateStatus(status);
+    if (status.running && !state.pollTimer) {
+      state.pollTimer = setInterval(refreshStatus, 1800);
+    }
     if (!status.running && state.pollTimer) {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
@@ -303,6 +349,7 @@ function updateStatus(status) {
   renderLoopProgress(status);
   renderLiveTopK(status);
   renderRuntimeConsole(status);
+  renderTelemetry(status);
   if (status.counts) {
     const liveCount = Array.isArray(status.live_candidates) ? status.live_candidates.length : 0;
     document.getElementById("candidateCount").textContent = status.running
@@ -330,6 +377,63 @@ function renderRuntimeConsole(status) {
     .map((item) => `[${item.time || "--:--:--"}] ${item.text || ""}`)
     .join("\n");
   if (wasNearBottom || status.running) terminal.scrollTop = terminal.scrollHeight;
+}
+
+function renderTelemetry(status) {
+  const telemetry = status.telemetry || {};
+  drawTelemetryChart("density", telemetry.density || [], {
+    value: (number) => `${number.toFixed(4)} g/cm³`
+  });
+  drawTelemetryChart("heatFlux", telemetry.heat_flux || [], {
+    value: (number) => Number(number).toExponential(3)
+  });
+}
+
+function drawTelemetryChart(name, rawPoints, format) {
+  const svg = document.getElementById(`${name}Chart`);
+  const path = svg?.querySelector(".telemetry-line");
+  const valueLabel = document.getElementById(`${name}ChartValue`);
+  const rangeLabel = document.getElementById(`${name}ChartRange`);
+  const emptyLabel = document.getElementById(`${name}ChartEmpty`);
+  if (!svg || !path || !valueLabel || !rangeLabel || !emptyLabel) return;
+
+  const points = rawPoints
+    .map((point) => ({step: Number(point.step), value: Number(point.value)}))
+    .filter((point) => Number.isFinite(point.step) && Number.isFinite(point.value));
+  if (!points.length) {
+    path.setAttribute("d", "");
+    valueLabel.textContent = "等待数据";
+    rangeLabel.textContent = "--";
+    emptyLabel.hidden = false;
+    return;
+  }
+
+  const width = 520;
+  const height = 180;
+  const padding = 12;
+  const xMin = Math.min(...points.map((point) => point.step));
+  const xMax = Math.max(...points.map((point) => point.step));
+  const yMin = Math.min(...points.map((point) => point.value));
+  const yMax = Math.max(...points.map((point) => point.value));
+  const xSpan = Math.max(xMax - xMin, 1);
+  const rawYSpan = yMax - yMin;
+  const yPadding = Math.max(Math.abs(yMax) * 0.04, rawYSpan * 0.08, 1e-12);
+  const low = yMin - yPadding;
+  const ySpan = Math.max(yMax + yPadding - low, 1e-12);
+  const commands = points.map((point, index) => {
+    const x = padding + ((point.step - xMin) / xSpan) * (width - 2 * padding);
+    const y = height - padding - ((point.value - low) / ySpan) * (height - 2 * padding);
+    return `${index ? "L" : "M"}${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+
+  path.setAttribute("d", commands.join(" "));
+  valueLabel.textContent = format.value(points[points.length - 1].value);
+  rangeLabel.textContent = `${points.length} 点 · step ${formatStep(xMin)}–${formatStep(xMax)}`;
+  emptyLabel.hidden = true;
+}
+
+function formatStep(value) {
+  return Math.abs(value) >= 1000000 ? Number(value).toExponential(2) : Math.round(value).toLocaleString();
 }
 
 function updateIdleIterationTarget() {
@@ -476,6 +580,7 @@ async function loadResults() {
 function renderAllTables() {
   renderTable("lowKTable", state.results.low_k_database || state.results.thermal_results || [], [
     "low_k_rank",
+    "measurement_status",
     "input_path",
     "conductivity_w_mk",
     "success",
@@ -484,6 +589,7 @@ function renderAllTables() {
   renderCandidateTable();
   renderTable("thermalTable", state.results.thermal_results || [], [
     "low_k_rank",
+    "measurement_status",
     "input_path",
     "conductivity_w_mk",
     "success",
@@ -614,7 +720,7 @@ async function clearData(payload) {
 function renderMetricsFromResults() {
   const thermalRows = state.results.thermal_results || [];
   const values = thermalRows
-    .filter((row) => String(row.success || "").toLowerCase() !== "false")
+    .filter((row) => String(row.success || "").toLowerCase() === "true" && row.measurement_status === "已通过校验")
     .map((row) => Number(row.conductivity_w_mk))
     .filter((value) => Number.isFinite(value) && value > 0);
   document.getElementById("bestKappa").textContent = values.length ? `${Math.min(...values).toFixed(4)} W/mK` : "--";

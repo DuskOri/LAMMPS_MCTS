@@ -19,9 +19,97 @@ class ThermalConductivityInputResult:
     message: str = ""
 
 
+@dataclass
+class LammpsStageInputResult:
+    """Paths produced while preparing one standalone LAMMPS stage."""
+
+    data_path: str
+    input_path: str
+    output_data_path: str
+    success: bool
+    message: str = ""
+
+
+def write_compression_input(
+    data_file,
+    input_file,
+    compressed_data_file,
+    output_prefix,
+    params=None,
+):
+    """Write the melt, density plateau and cooling stage as a separate job."""
+    params = _normalise_params(params or {})
+    data_path = Path(data_file)
+    input_path = Path(input_file)
+    compressed_path = Path(compressed_data_file)
+    density_file = Path(f"{output_prefix}_density.dat")
+    missing = validate_force_field_data(
+        data_path,
+        force_field_include=params.get("force_field_include", ""),
+    )
+    if missing:
+        return LammpsStageInputResult(
+            str(data_path), "", str(compressed_path), False,
+            "LAMMPS data is topology-only; missing force-field sections: "
+            + ", ".join(missing),
+        )
+
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    compressed_path.parent.mkdir(parents=True, exist_ok=True)
+    density_file.parent.mkdir(parents=True, exist_ok=True)
+    script = _render_compression_script(
+        data_path.as_posix(),
+        compressed_path.as_posix(),
+        density_file.as_posix(),
+        params,
+    )
+    input_path.write_text(script, encoding="utf-8")
+    return LammpsStageInputResult(
+        str(data_path), str(input_path), str(compressed_path), True, "ok"
+    )
+
+
+def write_adaptive_nemd_input(data_file, input_file, output_prefix, params=None):
+    """Write a NEMD job whose production loop stops after heat-flux convergence."""
+    params = _normalise_params(params or {})
+    data_path = Path(data_file)
+    input_path = Path(input_file)
+    output_prefix = Path(output_prefix)
+    profile_file = Path(f"{output_prefix}_temperature_profile.dat")
+    transfer_file = Path(f"{output_prefix}_heat_flux.dat")
+    dump_file = Path(f"{output_prefix}_nemd_dump.lammpstrj")
+    final_data_file = Path(f"{output_prefix}_final.data")
+    missing = validate_force_field_data(
+        data_path,
+        force_field_include=params.get("force_field_include", ""),
+    )
+    if missing:
+        return ThermalConductivityInputResult(
+            str(data_path), "", "", "", "", "direct_nemd", False,
+            "LAMMPS data is topology-only; missing force-field sections: "
+            + ", ".join(missing),
+        )
+
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    script = _render_adaptive_nemd_script(
+        data_path.as_posix(),
+        profile_file.as_posix(),
+        transfer_file.as_posix(),
+        dump_file.as_posix(),
+        final_data_file.as_posix(),
+        params,
+    )
+    input_path.write_text(script, encoding="utf-8")
+    return ThermalConductivityInputResult(
+        str(data_path), str(input_path), str(profile_file), str(transfer_file),
+        str(dump_file), "direct_nemd", True, "ok",
+    )
+
+
 def write_direct_nemd_input(data_file, input_file, output_prefix, params=None):
     """生成冷热 Langevin 恒温浴驱动的直接 NEMD 输入。"""
-    params = _merge_params(_default_params(), params or {})
+    params = _normalise_params(params or {})
     data_path = Path(data_file)
     input_path = Path(input_file)
     output_prefix = Path(output_prefix)
@@ -48,28 +136,6 @@ def write_direct_nemd_input(data_file, input_file, output_prefix, params=None):
                 + ", ".join(missing)
             ),
         )
-
-    profile_nevery = max(int(params.get("nemd_profile_nevery", 100)), 1)
-    profile_repeat = max(int(params.get("nemd_profile_repeat", 20)), 1)
-    profile_every = profile_nevery * profile_repeat
-    production_steps = max(int(params["production_steps"]), profile_every)
-    params["nemd_profile_nevery"] = profile_nevery
-    params["nemd_profile_repeat"] = profile_repeat
-    params["nemd_profile_every"] = profile_every
-    params["production_steps"] = (
-        (production_steps + profile_every - 1) // profile_every
-    ) * profile_every
-
-    density_sample_every = max(int(params["density_sample_every"]), 1)
-    density_block_steps = max(int(params["density_block_steps"]), density_sample_every)
-    density_window_samples = max(density_block_steps // density_sample_every, 1)
-    params["density_sample_every"] = density_sample_every
-    params["density_window_samples"] = density_window_samples
-    params["density_block_steps"] = density_sample_every * density_window_samples
-    params["density_max_blocks"] = max(int(params["density_max_blocks"]), 3)
-    params["density_plateau_tolerance"] = max(
-        float(params["density_plateau_tolerance"]), 1.0e-6
-    )
 
     input_path.parent.mkdir(parents=True, exist_ok=True)
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +198,11 @@ def _type_count(text, type_name):
 
 def _has_any_section(text, names):
     return any(
-        re.search(rf"^\s*{re.escape(name)}\s*$", text, flags=re.MULTILINE)
+        re.search(
+            rf"^\s*{re.escape(name)}(?:\s+#.*)?\s*$",
+            text,
+            flags=re.MULTILINE,
+        )
         for name in names
     )
 
@@ -163,7 +233,10 @@ def _default_params():
         "nemd_hot_temperature": 350.0,
         "nemd_cold_temperature": 250.0,
         "nemd_thermostat_damp": 100.0,
-        "nemd_steady_steps": 100000,
+        "nemd_steady_steps": 20000,
+        "nemd_production_block_steps": 10000,
+        "nemd_min_production_blocks": 5,
+        "nemd_heat_flux_tolerance": 0.10,
         "nemd_profile_nevery": 100,
         "nemd_profile_repeat": 20,
         "nemd_min_gradient_r2": 0.70,
@@ -186,6 +259,58 @@ def _merge_params(default_params, user_params):
     merged = dict(default_params)
     merged.update(user_params)
     return merged
+
+
+def _normalise_params(user_params):
+    """Merge defaults and align averaging, density and production windows."""
+    params = _merge_params(_default_params(), user_params)
+    profile_nevery = max(int(params.get("nemd_profile_nevery", 100)), 1)
+    profile_repeat = max(int(params.get("nemd_profile_repeat", 20)), 1)
+    profile_every = profile_nevery * profile_repeat
+    block_steps = max(
+        int(params.get("nemd_production_block_steps", profile_every)),
+        profile_every,
+    )
+    block_steps = ((block_steps + profile_every - 1) // profile_every) * profile_every
+    min_blocks = max(int(params.get("nemd_min_production_blocks", 5)), 3)
+    production_steps = int(params.get("production_steps", block_steps))
+    max_blocks = production_steps // block_steps
+    if max_blocks < min_blocks:
+        raise ValueError(f"production_steps must be at least {min_blocks * block_steps}; configured {production_steps}")
+    if not (float(params["nemd_hot_temperature"]) > float(params["nemd_cold_temperature"]) > 0):
+        raise ValueError("NEMD hot temperature must exceed cold temperature, both positive")
+    for key in ("timestep", "tdamp", "pdamp", "nemd_thermostat_damp"):
+        if float(params[key]) <= 0:
+            raise ValueError(f"{key} must be positive")
+    density_sample_every = max(int(params["density_sample_every"]), 1)
+    density_block_steps = max(int(params["density_block_steps"]), density_sample_every)
+
+    params.update(
+        {
+            "nemd_profile_nevery": profile_nevery,
+            "nemd_profile_repeat": profile_repeat,
+            "nemd_profile_every": profile_every,
+            "nemd_production_block_steps": block_steps,
+            "nemd_min_production_blocks": min_blocks,
+            "nemd_max_production_blocks": max_blocks,
+            "production_steps": max_blocks * block_steps,
+            "nemd_heat_flux_tolerance": max(
+                float(params.get("nemd_heat_flux_tolerance", 0.10)), 1.0e-6
+            ),
+            "density_sample_every": density_sample_every,
+            "density_window_samples": max(
+                density_block_steps // density_sample_every, 1
+            ),
+            "density_max_blocks": max(int(params["density_max_blocks"]), 3),
+            "density_plateau_tolerance": max(
+                float(params["density_plateau_tolerance"]), 1.0e-6
+            ),
+        }
+    )
+    params["density_block_steps"] = (
+        params["density_sample_every"] * params["density_window_samples"]
+    )
+    return params
 
 
 def _style_line(keyword, value):
@@ -237,7 +362,7 @@ unfix           pre_nvt
 variable        rho_now equal density
 variable        rho_tol equal {params["density_plateau_tolerance"]}
 fix             density_npt all npt temp ${{Tmelt}} ${{Tmelt}} ${{tdamp}} iso ${{P}} ${{P}} ${{pdamp}}
-fix             density_window all ave/time {params["density_sample_every"]} {params["density_window_samples"]} {params["density_block_steps"]} v_rho_now ave one file {density_file}
+fix             density_window all ave/time {params["density_sample_every"]} {params["density_window_samples"]} {params["density_block_steps"]} v_rho_now ave one file "{density_file}"
 thermo          {params["density_block_steps"]}
 
 run             {params["density_block_steps"]}
@@ -268,6 +393,7 @@ jump            SELF density_plateau_cleanup
 
 label           density_plateau_limit
 print           "WARNING: Density plateau was not reached before the configured window limit."
+quit            2
 
 label           density_plateau_cleanup
 unfix           density_window
@@ -290,15 +416,7 @@ print           "Final equilibrated density: ${{rho_system}} g/cm^3"
 """
 
 
-def _render_direct_nemd_script(
-    data_file,
-    profile_file,
-    transfer_file,
-    dump_file,
-    density_file,
-    params,
-):
-    """按照参考算例渲染冷热区直接 NEMD 脚本。"""
+def _render_lammps_header(data_file, params):
     style_lines = [
         _style_line("pair_style", params["pair_style"]),
         _style_line("bond_style", params["bond_style"]),
@@ -307,15 +425,11 @@ def _render_direct_nemd_script(
         _style_line("improper_style", params["improper_style"]),
     ]
     style_block = "\n".join(line for line in style_lines if line)
-    include_value = params.get("force_field_include", "")
-    include_file = "" if include_value is None else str(include_value).strip()
-    include_line = f"include         {Path(include_file).as_posix()}" if include_file else ""
+    include_file = str(params.get("force_field_include", "") or "").strip()
+    include_line = f'include         "{Path(include_file).as_posix()}"' if include_file else ""
     kspace_line = _style_line("kspace_style", params.get("kspace_style", ""))
     special_line = _style_line("special_bonds", params.get("special_bonds", ""))
-    equilibration_block = _render_density_equilibration(density_file, params)
-
-    return f"""# 冷热 Langevin 恒温浴直接 NEMD 热导率计算
-units           real
+    return f"""units           real
 dimension       3
 atom_style      full
 boundary        p p p
@@ -327,7 +441,7 @@ variable        tdamp equal {params["tdamp"]}
 variable        pdamp equal {params["pdamp"]}
 
 {style_block}
-read_data       {data_file}
+read_data       "{data_file}"
 {include_line}
 {special_line}
 {kspace_line}
@@ -337,15 +451,107 @@ neigh_modify    every 1 delay 0 check yes
 timestep        ${{dt}}
 thermo          {params["thermo_every"]}
 thermo_style    custom step temp press density vol pe ke etotal
-thermo_modify   flush yes
+thermo_modify   flush yes"""
+
+
+def _render_compression_script(data_file, compressed_data_file, density_file, params):
+    header = _render_lammps_header(data_file, params)
+    equilibration = _render_density_equilibration(density_file, params)
+    return f"""# Melt, density equilibration and room-temperature relaxation
+{header}
 
 minimize        1.0e-4 1.0e-6 500 5000
 velocity        all create ${{T}} {params["random_seed"]} mom yes rot yes dist gaussian
 
-{equilibration_block}
+{equilibration}
+write_data      "{compressed_data_file}"
+print           "Compressed structure written: {compressed_data_file}"
+"""
+
+
+def _render_flux_window_update(block_steps):
+    return f"""run             {block_steps}
+variable        flux_a delete
+variable        flux_a equal ${{flux_b}}
+variable        flux_b delete
+variable        flux_b equal ${{flux_c}}
+variable        flux_c delete
+variable        flux_c equal $(f_convergence_flux)"""
+
+
+def _render_flux_check(params):
+    return f"""variable        flux_mean equal (v_flux_a+v_flux_b+v_flux_c)/3.0
+variable        flux_floor equal ternary(abs(v_flux_mean)>1.0e-30,abs(v_flux_mean),1.0e-30)
+variable        flux_spread equal sqrt(((v_flux_a-v_flux_b)^2+(v_flux_b-v_flux_c)^2+(v_flux_a-v_flux_c)^2)/3.0)/v_flux_floor
+print           "Heat flux convergence check: relative spread=${{flux_spread}}, tolerance={params["nemd_heat_flux_tolerance"]}"
+if              "${{flux_spread}} <= {params["nemd_heat_flux_tolerance"]} && ${{flux_a}} > 0 && ${{flux_b}} > 0 && ${{flux_c}} > 0" then "jump SELF heat_flux_converged"
+variable        flux_mean delete
+variable        flux_floor delete
+variable        flux_spread delete"""
+
+
+def _render_adaptive_production(params):
+    block_steps = params["nemd_production_block_steps"]
+    min_blocks = params["nemd_min_production_blocks"]
+    max_blocks = params["nemd_max_production_blocks"]
+    warmup_updates = "\n".join(
+        _render_flux_window_update(block_steps) for _ in range(max(min_blocks - 3, 0))
+    )
+    remaining = max(max_blocks - min_blocks, 0)
+    continuation = ""
+    if remaining:
+        continuation = f"""
+variable        production_loop loop {remaining}
+label           heat_flux_production_loop
+{_render_flux_window_update(block_steps)}
+{_render_flux_check(params)}
+next            production_loop
+jump            SELF heat_flux_production_loop
+jump            SELF heat_flux_limit
+"""
+    return f"""variable        heat_flux_ok internal 0
+print           "NEMD production starts: block={block_steps} steps, minimum={min_blocks} blocks, maximum={max_blocks} blocks"
+run             {block_steps}
+variable        flux_a equal $(f_convergence_flux)
+run             {block_steps}
+variable        flux_b equal $(f_convergence_flux)
+run             {block_steps}
+variable        flux_c equal $(f_convergence_flux)
+{warmup_updates}
+{_render_flux_check(params)}
+{continuation}
+jump            SELF heat_flux_limit
+
+label           heat_flux_converged
+variable        heat_flux_ok delete
+variable        heat_flux_ok internal 1
+print           "Heat flux converged; production sampling stopped early."
+jump            SELF heat_flux_cleanup
+
+label           heat_flux_limit
+print           "WARNING: Heat flux did not converge before the production limit."
+
+label           heat_flux_cleanup"""
+
+
+def _render_adaptive_nemd_script(
+    data_file,
+    profile_file,
+    transfer_file,
+    dump_file,
+    final_data_file,
+    params,
+    equilibration="",
+):
+    header = _render_lammps_header(data_file, params)
+    production = _render_adaptive_production(params)
+    return f"""# Direct NEMD with adaptive heat-flux convergence
+{header}
+
+velocity        all create ${{T}} {params["random_seed"]} mom yes rot yes dist gaussian
+{equilibration}
 reset_timestep  0
 
-# 沿 x 方向依次划分固定端、热源、传热主体、冷源和固定端。
 variable        fix_thick equal 0.05*lx
 variable        source_thick equal 0.10*lx
 variable        flux_thick equal 0.10*lx
@@ -358,12 +564,13 @@ group           bottomfix region bottomfix
 group           topfix region topfix
 group           hot region hot
 group           cold region cold
-group           flux region flux
+velocity        bottomfix set 0.0 0.0 0.0
+velocity        topfix set 0.0 0.0 0.0
 
 compute         Thot all temp/region hot
 compute         Tcold all temp/region cold
-fix             fhot all langevin {params["nemd_hot_temperature"]} {params["nemd_hot_temperature"]} {params["nemd_thermostat_damp"]} {params["random_seed"]}
-fix             fcold all langevin {params["nemd_cold_temperature"]} {params["nemd_cold_temperature"]} {params["nemd_thermostat_damp"]} {int(params["random_seed"]) + 104729}
+fix             fhot all langevin {params["nemd_hot_temperature"]} {params["nemd_hot_temperature"]} {params["nemd_thermostat_damp"]} {params["random_seed"]} tally yes
+fix             fcold all langevin {params["nemd_cold_temperature"]} {params["nemd_cold_temperature"]} {params["nemd_thermostat_damp"]} {int(params["random_seed"]) + 104729} tally yes
 fix_modify      fhot temp Thot
 fix_modify      fcold temp Tcold
 fix             hold_bottom bottomfix setforce 0.0 0.0 0.0
@@ -371,31 +578,57 @@ fix             hold_top topfix setforce 0.0 0.0 0.0
 group           mobile subtract all bottomfix topfix
 fix             nemd_nve mobile nve
 thermo_style    custom step temp press density c_Thot c_Tcold
+print           "NEMD steady state starts: {params["nemd_steady_steps"]} steps"
 run             {params["nemd_steady_steps"]}
 
 reset_timestep  0
-compute         myKE flux ke/atom
-compute         myPE flux pe/atom
-compute         myStress flux stress/atom NULL virial
-compute         heat_flux flux heat/flux myKE myPE myStress
+compute         myKE all ke/atom
+compute         myPE all pe/atom
+compute         stressPair all stress/atom NULL pair kspace
+compute         stressBond all centroid/stress/atom NULL bond angle dihedral improper
+# real units: stress (atm A^3) / 68568.415 = energy (kcal/mol).
+# rmask selects the current occupants, including atoms crossing slab boundaries.
+variable        local_Jx atom "rmask(flux)*((c_myKE+c_myPE)*vx-((c_stressPair[1]+c_stressBond[1])*vx+(c_stressPair[4]+c_stressBond[4])*vy+(c_stressPair[5]+c_stressBond[5])*vz)/68568.415)"
+compute         regional_flux all reduce sum v_local_Jx
 variable        flux_volume equal ly*lz*v_flux_thick
-variable        Jx equal c_heat_flux[1]/v_flux_volume
-fix             average_flux flux ave/time {params["nemd_profile_nevery"]} {params["nemd_profile_repeat"]} {params["nemd_profile_every"]} v_Jx ave one file {transfer_file}
+variable        Jx equal c_regional_flux/v_flux_volume
+variable        cross_section equal ly*lz
+fix             average_flux all ave/time {params["nemd_profile_nevery"]} {params["nemd_profile_repeat"]} {params["nemd_profile_every"]} v_Jx ave one file "{transfer_file}"
+fix             convergence_flux all ave/time {params["nemd_profile_nevery"]} {params["nemd_production_block_steps"] // params["nemd_profile_nevery"]} {params["nemd_production_block_steps"]} v_Jx ave one
+fix             bath_energy all ave/time {params["nemd_profile_nevery"]} 1 {params["nemd_profile_every"]} f_fhot f_fcold v_cross_section file "{transfer_file.replace('_heat_flux.dat', '_bath_energy.dat')}"
 
 compute         layers all chunk/atom bin/1d x lower 0.5 units box
-fix             temperature_profile all ave/chunk {params["nemd_profile_nevery"]} {params["nemd_profile_repeat"]} {params["nemd_profile_every"]} layers temp norm sample file {profile_file}
-dump            trajectory all custom {params["dump_every"]} {dump_file} id mol type q x y z vx vy vz
+fix             temperature_profile all ave/chunk {params["nemd_profile_nevery"]} {params["nemd_profile_repeat"]} {params["nemd_profile_every"]} layers temp norm sample file "{profile_file}"
+dump            trajectory all custom {params["dump_every"]} "{dump_file}" id mol type q x y z vx vy vz
 thermo          {params["nemd_profile_every"]}
 thermo_style    custom step temp press density c_Thot c_Tcold v_Jx
 thermo_modify   flush yes
-run             {params["production_steps"]}
 
+{production}
+
+write_data      "{final_data_file}"
 undump          trajectory
+unfix           convergence_flux
+unfix           average_flux
+unfix           bath_energy
+unfix           temperature_profile
 unfix           nemd_nve
 unfix           fhot
 unfix           fcold
 unfix           hold_bottom
 unfix           hold_top
-unfix           average_flux
-unfix           temperature_profile
+if              "${{heat_flux_ok}} == 0" then "quit 2"
 """
+
+
+def _render_direct_nemd_script(
+    data_file, profile_file, transfer_file, dump_file, density_file, params,
+):
+    """Use the same validated measurement stage for combined and split jobs."""
+    equilibration = "minimize 1.0e-4 1.0e-6 500 5000\n"
+    equilibration += _render_density_equilibration(density_file, params)
+    return _render_adaptive_nemd_script(
+        data_file, profile_file, transfer_file, dump_file,
+        transfer_file.replace("_heat_flux.dat", "_final.data"), params,
+        equilibration=equilibration,
+    )

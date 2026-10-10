@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import threading
+from .process_control import register_process, unregister_process, close_process, raise_if_cancelled, cancel_processes
 
 
 _ACTIVE_PROCESS = None
@@ -38,7 +39,8 @@ def run_lammps_input(
         log_file = Path(log_path)
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(lammps_executable), "-in", str(input_file)]
+    raise_if_cancelled()
+    command = [str(lammps_executable), "-in", str(input_file.resolve()), "-log", "none"]
     if stream_output:
         print(f"[LAMMPS] input: {input_file.resolve()}", flush=True)
         print(f"[LAMMPS] log: {log_file.resolve()}", flush=True)
@@ -57,6 +59,7 @@ def run_lammps_input(
         with _ACTIVE_PROCESS_LOCK:
             global _ACTIVE_PROCESS
             _ACTIVE_PROCESS = process
+        register_process(process)
     except FileNotFoundError:
         return LammpsRunResult(
             input_path=str(input_file),
@@ -86,7 +89,7 @@ def run_lammps_input(
                 lines.append(line)
                 log_obj.write(line)
                 log_obj.flush()
-                if stream_output and _should_stream_line(line):
+                if stream_output and line.rstrip():
                     print(f"[LAMMPS] {line.rstrip()}", flush=True)
                 if line_callback is not None and _should_stream_line(line):
                     line_callback(line.rstrip())
@@ -95,11 +98,17 @@ def run_lammps_input(
     finally:
         if timer is not None:
             timer.cancel()
+        close_process(process)
+        if process.stdout is not None:
+            process.stdout.close()
+        unregister_process(process)
         with _ACTIVE_PROCESS_LOCK:
             if _ACTIVE_PROCESS is process:
                 _ACTIVE_PROCESS = None
 
+    raise_if_cancelled()
     log_text = "".join(lines)
+    not_converged = "WARNING: Heat flux did not converge" in log_text or "WARNING: Density plateau was not reached" in log_text
     if timed_out.is_set():
         return LammpsRunResult(
             input_path=str(input_file),
@@ -112,9 +121,9 @@ def run_lammps_input(
     return LammpsRunResult(
         input_path=str(input_file),
         log_path=str(log_file),
-        success=returncode == 0,
+        success=returncode == 0 and not not_converged,
         returncode=returncode,
-        message="ok" if returncode == 0 else _last_error_line(log_text),
+        message="ok" if returncode == 0 and not not_converged else _last_error_line(log_text),
     )
 
 
@@ -133,6 +142,11 @@ def _should_stream_line(line):
             "Reading data file",
             "Density ",
             "Final equilibrated density",
+            "Compressed structure written",
+            "NEMD steady state starts",
+            "NEMD production starts",
+            "Heat flux convergence check",
+            "Heat flux converged",
             "Loop time of",
             "Total wall time",
         )
@@ -165,16 +179,10 @@ def _last_error_line(log_text):
 
 def terminate_active_lammps(grace_seconds=3.0):
     """Terminate the LAMMPS child process started by this Python service."""
+    terminated = cancel_processes()
     with _ACTIVE_PROCESS_LOCK:
         process = _ACTIVE_PROCESS
-
-    if process is None or process.poll() is not None:
-        return False
-
-    process.terminate()
-    try:
-        process.wait(timeout=max(float(grace_seconds), 0.1))
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-    return True
+    if not terminated and process is not None and process.poll() is None:
+        close_process(process)
+        terminated = True
+    return terminated

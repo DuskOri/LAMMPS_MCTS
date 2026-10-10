@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import math
+import statistics
 
 
 @dataclass
@@ -19,6 +20,9 @@ class ThermalConductivityResult:
     gradient_k_per_a: float = 0.0
     gradient_r2: float = 0.0
     heat_flux_w_m2: float = 0.0
+    relative_error: float = 0.0
+    energy_balance_error: float = 0.0
+    flux_agreement_error: float = 0.0
 
 
 def analyze_direct_nemd_outputs(
@@ -28,21 +32,73 @@ def analyze_direct_nemd_outputs(
     tail_fraction=0.50,
     min_gradient_r2=0.80,
     min_temperature_span=5.0,
+    bath_energy_path=None,
+    timestep_fs=0.5,
+    block_steps=None,
+    max_relative_error=0.20,
+    energy_balance_tolerance=0.20,
+    flux_agreement_tolerance=0.30,
 ):
     """用中央区热流和温度梯度计算直接 NEMD 热导率。"""
+    metrics = dict(relative_error=0.0, energy_balance_error=0.0, flux_agreement_error=0.0)
     try:
+        first_step = None
+        if block_steps:
+            rows = _read_numeric_rows(heat_flux_path, 2)
+            if not rows or any(not all(math.isfinite(v) for v in row) for row in rows):
+                raise ValueError("NEMD heat-flux output contains missing or nonfinite data")
+            groups = {}
+            for row in rows:
+                if row[0] <= 0:
+                    continue
+                groups.setdefault((int(row[0]) - 1) // int(block_steps), []).append(row)
+            complete = [group for group in groups.values() if int(group[-1][0]) % int(block_steps) == 0]
+            count = max(3, int(len(complete) * float(tail_fraction)))
+            selected = complete[-count:]
+            if len(selected) < 3:
+                raise ValueError("NEMD uncertainty requires at least three complete production blocks")
+            means = [statistics.mean(row[1] for row in group) for group in selected]
+            native_flux = statistics.mean(means)
+            if any(value <= 0 for value in means):
+                raise ValueError("NEMD heat flow changed sign or points away from the cold bath")
+            metrics["relative_error"] = statistics.stdev(means) / math.sqrt(len(means)) / abs(native_flux)
+            if metrics["relative_error"] > float(max_relative_error):
+                raise ValueError("NEMD block standard error exceeds the configured relative-error limit")
+            first_step = selected[0][0][0]
         coordinates, temperatures = read_temperature_profile(
             temperature_profile_path,
             tail_fraction=tail_fraction,
+            minimum_step=first_step,
         )
         gradient, gradient_r2, temperature_span = fit_temperature_gradient(
             coordinates,
             temperatures,
         )
-        native_flux = read_average_heat_flux(
-            heat_flux_path,
-            tail_fraction=tail_fraction,
-        )
+        if not block_steps:
+            native_flux = read_average_heat_flux(heat_flux_path, tail_fraction=tail_fraction)
+        slope, _, _ = fit_temperature_gradient(coordinates, temperatures, signed=True)
+        if bath_energy_path:
+            rows = _read_numeric_rows(bath_energy_path, 4)
+            if first_step is not None:
+                rows = [row for row in rows if row[0] >= first_step]
+            if len(rows) < 3 or any(not all(math.isfinite(v) for v in row) for row in rows):
+                raise ValueError("NEMD bath-energy output is incomplete or nonfinite")
+            # Langevin scalar reports reservoir energy: hot negative, cold positive.
+            hot = -_linear_regression([(r[0] * float(timestep_fs), r[1]) for r in rows])[0]
+            cold = -_linear_regression([(r[0] * float(timestep_fs), r[2]) for r in rows])[0]
+            if hot <= 0 or cold >= 0:
+                raise ValueError("NEMD baths do not supply and remove heat in the expected directions")
+            power = (hot - cold) / 2.0
+            metrics["energy_balance_error"] = abs(hot + cold) / power
+            area = statistics.mean(r[3] for r in rows)
+            if area <= 0:
+                raise ValueError("NEMD cross-sectional area must be positive")
+            bath_flux = power / area
+            metrics["flux_agreement_error"] = abs(native_flux - bath_flux) / bath_flux
+            if metrics["energy_balance_error"] > float(energy_balance_tolerance):
+                raise ValueError("NEMD hot/cold bath energy balance exceeds tolerance")
+            if metrics["flux_agreement_error"] > float(flux_agreement_tolerance):
+                raise ValueError("NEMD microscopic and bath heat flux disagree beyond tolerance")
     except (OSError, ValueError) as error:
         return ThermalConductivityResult(
             input_path=str(input_path),
@@ -52,6 +108,7 @@ def analyze_direct_nemd_outputs(
             success=False,
             message=str(error),
             method="direct_nemd",
+            **metrics,
         )
 
     if temperature_span < float(min_temperature_span):
@@ -72,6 +129,9 @@ def analyze_direct_nemd_outputs(
             input_path, temperature_profile_path, heat_flux_path, message,
             gradient, gradient_r2,
         )
+    if native_flux * slope >= 0:
+        return _failed_nemd_result(input_path, temperature_profile_path, heat_flux_path,
+            "NEMD heat flux and temperature gradient violate Fourier-law direction", gradient, gradient_r2)
     if gradient <= 0.0:
         return _failed_nemd_result(
             input_path, temperature_profile_path, heat_flux_path,
@@ -100,18 +160,19 @@ def analyze_direct_nemd_outputs(
         gradient_k_per_a=gradient,
         gradient_r2=gradient_r2,
         heat_flux_w_m2=heat_flux_w_m2,
+        **metrics,
     )
 
 
-def read_temperature_profile(filename, tail_fraction=0.50):
+def read_temperature_profile(filename, tail_fraction=0.50, minimum_step=None):
     """读取 ave/chunk 完整数据块，并平均末段温度剖面。"""
-    blocks = _read_chunk_blocks(filename)
+    blocks = _read_chunk_blocks(filename, minimum_step=minimum_step)
     if not blocks:
         raise ValueError("NEMD temperature profile has no complete data blocks")
 
     fraction = min(max(float(tail_fraction), 0.0), 1.0)
     tail_count = max(1, int(len(blocks) * fraction)) if fraction else 1
-    selected = blocks[-tail_count:]
+    selected = blocks if minimum_step is not None else blocks[-tail_count:]
     reference = selected[-1]
     averaged = []
     for row_index, reference_row in enumerate(reference):
@@ -133,7 +194,7 @@ def read_temperature_profile(filename, tail_fraction=0.50):
     return [item[0] for item in averaged], [item[1] for item in averaged]
 
 
-def fit_temperature_gradient(coordinates, temperatures):
+def fit_temperature_gradient(coordinates, temperatures, signed=False):
     """在冷热源之间的中央 60% 区域拟合温度梯度。"""
     if len(coordinates) != len(temperatures) or len(coordinates) < 4:
         raise ValueError("NEMD temperature profile is incomplete")
@@ -153,7 +214,7 @@ def fit_temperature_gradient(coordinates, temperatures):
     temperature_span = max(value for _, value in points) - min(
         value for _, value in points
     )
-    return abs(slope), r_squared, temperature_span
+    return slope if signed else abs(slope), r_squared, temperature_span
 
 
 def read_average_heat_flux(filename, tail_fraction=0.50):
@@ -167,7 +228,7 @@ def read_average_heat_flux(filename, tail_fraction=0.50):
     return sum(values[-tail_count:]) / tail_count
 
 
-def _read_chunk_blocks(filename):
+def _read_chunk_blocks(filename, minimum_step=None):
     lines = Path(filename).read_text(encoding="utf-8", errors="ignore").splitlines()
     blocks = []
     index = 0
@@ -195,7 +256,7 @@ def _read_chunk_blocks(filename):
                 break
             if len(row) >= 4:
                 block.append(row)
-        if len(block) == chunk_count:
+        if len(block) == chunk_count and (minimum_step is None or float(parts[0]) >= minimum_step):
             blocks.append(block)
     return blocks
 

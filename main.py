@@ -1,7 +1,10 @@
 """项目主入口：执行 MCTS 搜索并生成候选聚合物结构。"""
 
 import json
+from copy import deepcopy
 from pathlib import Path
+from run_storage import new_run_id, write_json
+from md_engine.process_control import raise_if_cancelled, reset_cancellation, cancel_processes, PipelineCancelled
 
 try:
     import yaml
@@ -12,6 +15,7 @@ from generator import build_polymer_from_sequence, prepare_initial_system
 from md_engine import write_direct_nemd_input
 from mcts import MCTSEngine, ThermalFeedbackEvaluator, configure_fragment_registry
 from mcts.ai_fragment_api import generate_ai_fragment_file
+from mcts.fragment_registry import get_fragment_registry
 from post_process import (
     write_build_results_csv,
     write_candidates_csv,
@@ -38,7 +42,7 @@ DEFAULT_CONFIG = {
         "feedback_mode": "thermal",
         "feedback_every_iteration": True,
         "feedback_max_evaluations": 50,
-        "feedback_output_dir": "outputs/mcts_feedback",
+        "feedback_output_dir": "data",
         "feedback_run_lammps": True,
         "feedback_reward_scale": 0.20,
         "feedback_fallback_to_heuristic": False,
@@ -75,6 +79,7 @@ DEFAULT_CONFIG = {
         "tolerance": 2.0,
         "packmol_executable": "packmol",
         "force_field": "uff_screening",
+        "packmol_timeout_seconds": 600,
     },
     "thermal_conductivity": {
         "profile": "quick",
@@ -102,11 +107,17 @@ DEFAULT_CONFIG = {
         "nemd_hot_temperature": 450.0,
         "nemd_cold_temperature": 150.0,
         "nemd_thermostat_damp": 1.0,
-        "nemd_steady_steps": 100000,
+        "nemd_steady_steps": 20000,
+        "nemd_production_block_steps": 10000,
+        "nemd_min_production_blocks": 5,
+        "nemd_heat_flux_tolerance": 0.15,
         "nemd_profile_nevery": 10,
         "nemd_profile_repeat": 100,
         "nemd_min_gradient_r2": 0.70,
         "nemd_min_temperature_span": 5.0,
+        "nemd_max_relative_error": 0.20,
+        "nemd_energy_balance_tolerance": 0.20,
+        "nemd_flux_agreement_tolerance": 0.30,
         "thermo_every": 500,
         "dump_every": 5000,
         "random_seed": 87287,
@@ -124,6 +135,8 @@ DEFAULT_CONFIG = {
     "lammps": {
         "executable": "lmp",
         "timeout_seconds": 1800,
+        "compression_timeout_seconds": 1800,
+        "nemd_timeout_seconds": 1800,
     },
     "output": {
         "directory": "outputs",
@@ -145,13 +158,17 @@ def load_config(filename="config.yaml"):
         config_path = PROJECT_ROOT / config_path
 
     if not config_path.exists() or config_path.stat().st_size == 0:
-        return DEFAULT_CONFIG
+        return deepcopy(DEFAULT_CONFIG)
 
     if yaml is not None:
         with config_path.open("r", encoding="utf-8") as file_obj:
             user_config = yaml.safe_load(file_obj) or {}
     else:
-        user_config = _load_simple_yaml(config_path)
+        text = config_path.read_text(encoding="utf-8")
+        try:
+            user_config = json.loads(text)
+        except json.JSONDecodeError:
+            user_config = _load_simple_yaml(config_path)
 
     return _merge_config(DEFAULT_CONFIG, user_config)
 
@@ -159,9 +176,27 @@ def load_config(filename="config.yaml"):
 def run_search(config, progress_callback=None):
     """运行 MCTS 搜索；thermal 模式下每轮用热导率作为 reward。"""
     configure_chemistry(config)
+    if config.get("runtime", {}).get("run_id"):
+        registry = get_fragment_registry()
+        config["runtime"]["fragment_snapshot"] = {"smiles": registry.smiles_map(), "transitions": registry.graph()}
+        write_json(Path(config["output"]["directory"]) / "config.json", config)
     mcts_config = config["mcts"]
     reward_fn = None
     feedback_records = []
+    output_dir = Path(config["output"]["directory"])
+
+    def checkpoint(event, message, details=None):
+        if event == "candidate":
+            rows = sorted(engine._rank_evaluated_candidates(), key=lambda item: item["score"], reverse=True)
+            records = evaluator.records if evaluator is not None else []
+            write_candidates_csv(rows, output_dir / config["output"]["candidates_csv"])
+            write_search_low_k_database_csv(rows, records, output_dir / config["output"]["low_k_database_csv"])
+            write_json(output_dir / "search_checkpoint.json", {
+                "iteration": engine.current_iteration, "total_iterations": engine.total_iterations,
+                "candidates": rows, "reward_cache": [{"sequence": list(key), "reward": value} for key, value in engine.reward_cache.items()],
+            })
+        if progress_callback is not None:
+            progress_callback(event, message, details or {})
 
     if mcts_config.get("feedback_mode", "heuristic") == "thermal":
         max_evaluations = _resolve_feedback_max_evaluations(mcts_config)
@@ -173,7 +208,7 @@ def run_search(config, progress_callback=None):
             reward_scale=mcts_config["feedback_reward_scale"],
             fallback_to_heuristic=mcts_config["feedback_fallback_to_heuristic"],
             failure_reward=mcts_config["feedback_failure_reward"],
-            progress_callback=progress_callback,
+            progress_callback=checkpoint,
         )
         reward_fn = evaluator
     else:
@@ -186,7 +221,7 @@ def run_search(config, progress_callback=None):
         rollout_limit=mcts_config["rollout_limit"],
         reward_fn=reward_fn,
         random_seed=mcts_config.get("random_seed"),
-        progress_callback=progress_callback,
+        progress_callback=checkpoint,
     )
     candidates = engine.ranked_candidates(
         iterations=mcts_config["iterations"],
@@ -225,6 +260,7 @@ def build_candidates(candidates, config):
 
     results = []
     for index, candidate in enumerate(candidates, start=1):
+        raise_if_cancelled()
         result = build_polymer_from_sequence(
             candidate["sequence"],
             target_length_angstrom=polymer_config["target_chain_length_angstrom"],
@@ -247,6 +283,7 @@ def prepare_systems(build_results, config):
 
     results = []
     for result in build_results:
+        raise_if_cancelled()
         if not result.success or not result.pdb_path:
             continue
 
@@ -259,6 +296,7 @@ def prepare_systems(build_results, config):
             packmol_executable=system_config["packmol_executable"],
             template_mol=result.mol_path,
             force_field=system_config.get("force_field", "uff_screening"),
+            timeout=system_config.get("packmol_timeout_seconds", 600),
         )
         results.append(system_result)
 
@@ -281,6 +319,7 @@ def write_thermal_inputs(system_results, config):
 
     results = []
     for index, system_result in enumerate(system_results, start=1):
+        raise_if_cancelled()
         if not system_result.success or not system_result.system_data_path:
             continue
 
@@ -415,13 +454,48 @@ def _load_custom_fragment_file(filename):
 
 def _merge_config(default_config, user_config):
     """递归合并配置，用户只需要写想改的字段。"""
-    merged = {}
-    for key, value in default_config.items():
-        if isinstance(value, dict):
-            merged[key] = _merge_config(value, user_config.get(key, {}))
+    if not isinstance(user_config, dict):
+        raise ValueError("configuration sections must be objects")
+    merged = deepcopy(default_config)
+    for key, value in user_config.items():
+        if isinstance(value, dict) and isinstance(default_config.get(key), dict):
+            merged[key] = _merge_config(default_config[key], value)
         else:
-            merged[key] = user_config.get(key, value)
+            merged[key] = deepcopy(value)
     return merged
+
+
+def prepare_run_config(config):
+    """Archive one run and publish its location without overwriting previous artifacts."""
+    config = deepcopy(config)
+    run_id = new_run_id()
+    output_root = Path(config["output"]["directory"])
+    feedback_root = Path(config["mcts"]["feedback_output_dir"])
+    if not output_root.is_absolute():
+        output_root = PROJECT_ROOT / output_root
+    if not feedback_root.is_absolute():
+        feedback_root = PROJECT_ROOT / feedback_root
+    output_dir = output_root / "runs" / run_id
+    feedback_dir = feedback_root / "runs" / run_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    feedback_dir.mkdir(parents=True, exist_ok=False)
+    config["output"]["directory"] = str(output_dir)
+    config["mcts"]["feedback_output_dir"] = str(feedback_dir)
+    config["runtime"] = {"run_id": run_id, "output_root": str(output_root)}
+    include = config["thermal_conductivity"].get("force_field_include")
+    if include and not Path(include).is_absolute():
+        config["thermal_conductivity"]["force_field_include"] = str(PROJECT_ROOT / include)
+    write_json(output_dir / "config.json", config)
+    write_json(output_root / "latest_run.json", {"run_id": run_id, "directory": str(output_dir), "status": "running"})
+    return config
+
+
+def finish_run(config, status, message=""):
+    runtime = config.get("runtime", {})
+    if runtime.get("output_root"):
+        manifest = {"run_id": runtime["run_id"], "directory": config["output"]["directory"], "status": status, "message": message}
+        write_json(Path(config["output"]["directory"]) / "run_status.json", manifest)
+        write_json(Path(runtime["output_root"]) / "latest_run.json", manifest)
 
 
 def _load_simple_yaml(filename):
@@ -430,9 +504,11 @@ def _load_simple_yaml(filename):
     current_section = None
 
     for raw_line in Path(filename).read_text(encoding="utf-8").splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line:
+        line = raw_line.rstrip()
+        if not line or line.lstrip().startswith("#"):
             continue
+        if raw_line.startswith("    ") or line.lstrip().startswith("- "):
+            raise ValueError("Nested YAML requires PyYAML; install requirements.txt or use JSON configuration")
 
         if not raw_line.startswith(" ") and line.endswith(":"):
             current_section = line[:-1].strip()
@@ -450,6 +526,10 @@ def _load_simple_yaml(filename):
 
 def _parse_config_value(value):
     """把配置文件里的字符串转换为常用 Python 类型。"""
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
     if value.lower() in ("true", "false"):
         return value.lower() == "true"
 
@@ -463,31 +543,42 @@ def _parse_config_value(value):
 
 def main():
     """执行低热导聚合物搜索，并导出最终 top_k 候选结果。"""
-    config = load_config()
-    candidates, feedback_records = run_search(config)
-    if config["output"].get("export_final_structures", True):
-        build_results = build_candidates(candidates, config)
-        system_results = prepare_systems(build_results, config)
-        thermal_input_results = write_thermal_inputs(system_results, config)
-    else:
-        build_results = []
-        system_results = []
-        thermal_input_results = []
-    save_outputs(
-        candidates,
-        feedback_records,
-        build_results,
-        system_results,
-        thermal_input_results,
-        config,
-    )
+    reset_cancellation()
+    config = prepare_run_config(load_config())
+    try:
+        candidates, feedback_records = run_search(config)
+        save_outputs(candidates, feedback_records, [], [], [], config)
+        if config["output"].get("export_final_structures", True):
+            build_results = build_candidates(candidates, config)
+            system_results = prepare_systems(build_results, config)
+            thermal_input_results = write_thermal_inputs(system_results, config)
+        else:
+            build_results = []
+            system_results = []
+            thermal_input_results = []
+        save_outputs(
+            candidates,
+            feedback_records,
+            build_results,
+            system_results,
+            thermal_input_results,
+            config,
+        )
+        finish_run(config, "done")
 
-    print(f"候选序列数量: {len(candidates)}")
-    print(f"MCTS反馈记录数量: {len(feedback_records)}")
-    print(f"结构生成数量: {len(build_results)}")
-    print(f"初始体系数量: {len(system_results)}")
-    print(f"热导率输入脚本数量: {len(thermal_input_results)}")
-    print(f"结果目录: {config['output']['directory']}")
+        print(f"候选序列数量: {len(candidates)}")
+        print(f"MCTS反馈记录数量: {len(feedback_records)}")
+        print(f"结构生成数量: {len(build_results)}")
+        print(f"初始体系数量: {len(system_results)}")
+        print(f"热导率输入脚本数量: {len(thermal_input_results)}")
+        print(f"结果目录: {config['output']['directory']}")
+    except (PipelineCancelled, KeyboardInterrupt):
+        cancel_processes()
+        finish_run(config, "cancelled", "run cancelled")
+        raise
+    except Exception as error:
+        finish_run(config, "failed", str(error))
+        raise
 
 
 if __name__ == "__main__":

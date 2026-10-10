@@ -203,6 +203,15 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Per-evaluation molecular dynamics data can be large.
+data/*
+!data/README.md
+
+# Generated simulation outputs and local logs are kept outside source control.
+outputs/*
+!outputs/README.md
+/log.lammps
+
 # Ruff stuff:
 .ruff_cache/
 

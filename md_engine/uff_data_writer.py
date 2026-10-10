@@ -175,6 +175,7 @@ def _dihedral_parameters(molecule):
         atom_k = central_bond.GetEndAtomIdx()
         left = [atom.GetIdx() for atom in molecule.GetAtomWithIdx(atom_j).GetNeighbors() if atom.GetIdx() != atom_k]
         right = [atom.GetIdx() for atom in molecule.GetAtomWithIdx(atom_k).GetNeighbors() if atom.GetIdx() != atom_j]
+        contributions = []
         for atom_i in left:
             for atom_l in right:
                 if atom_i == atom_l:
@@ -194,23 +195,37 @@ def _dihedral_parameters(molecule):
                 sign, multiplicity = _torsion_shape(
                     molecule.GetAtomWithIdx(atom_j),
                     molecule.GetAtomWithIdx(atom_k),
+                    central_bond.GetBondTypeAsDouble(),
+                    any(molecule.GetAtomWithIdx(index).GetHybridization() == Chem.HybridizationType.SP2 for index in (atom_i, atom_l)),
                 )
-                coefficients = (barrier / 2.0, sign, multiplicity)
-                type_id = _coefficient_type(coefficients, type_map, type_rows)
-                rows.append(
-                    (type_id, atom_i + 1, atom_j + 1, atom_k + 1, atom_l + 1)
-                )
+                contributions.append((barrier, sign, multiplicity, atom_i, atom_l))
+        # RDKit distributes a central bond's torsional barrier across its contributions.
+        for barrier, sign, multiplicity, atom_i, atom_l in contributions:
+            coefficients = (barrier / (2.0 * len(contributions)), sign, multiplicity)
+            type_id = _coefficient_type(coefficients, type_map, type_rows)
+            rows.append((type_id, atom_i + 1, atom_j + 1, atom_k + 1, atom_l + 1))
     return rows, type_rows
 
 
-def _torsion_shape(atom_j, atom_k):
+def _torsion_shape(atom_j, atom_k, bond_order=1.0, end_atom_is_sp2=False):
     sp2 = Chem.HybridizationType.SP2
     sp3 = Chem.HybridizationType.SP3
+    group6 = {8, 16, 34, 52, 84}
+    j_group6 = atom_j.GetAtomicNum() in group6
+    k_group6 = atom_k.GetAtomicNum() in group6
     if atom_j.GetHybridization() == sp2 and atom_k.GetHybridization() == sp2:
         return -1, 2
     if atom_j.GetHybridization() == sp3 and atom_k.GetHybridization() == sp3:
+        if bond_order == 1.0 and j_group6 and k_group6:
+            return 1, 2
         return 1, 3
-    return 1, 6
+    if bond_order == 1.0:
+        if ((atom_j.GetHybridization() == sp3 and j_group6 and not k_group6)
+                or (atom_k.GetHybridization() == sp3 and k_group6 and not j_group6)):
+            return 1, 2
+        if end_atom_is_sp2:
+            return 1, 3
+    return -1, 6
 
 
 def _coefficient_type(coefficients, type_map, type_rows):

@@ -216,6 +216,8 @@ class FragmentRegistry:
         if isinstance(custom_fragments, Mapping):
             custom_rows = [custom_fragments]
         elif isinstance(custom_fragments, str):
+            if custom_fragments.strip():
+                raise ValueError("custom_fragments must be a list of objects")
             custom_rows = []
         else:
             custom_rows = custom_fragments or ()
@@ -227,6 +229,8 @@ class FragmentRegistry:
             custom_transitions = {}
 
         if not isinstance(custom_transitions, Mapping):
+            if custom_transitions is not None:
+                raise ValueError("custom_transitions must be an object")
             custom_transition_rows = {}
         else:
             custom_transition_rows = custom_transitions
@@ -242,10 +246,19 @@ class FragmentRegistry:
         """把用户在 config.yaml 里写的片段加入库中。"""
         custom_keys: list[str] = []
         for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("custom fragments must be objects")
             key = str(row.get("key", "")).strip()
             smiles = str(row.get("smiles", "")).strip()
-            if not key or not smiles:
-                continue
+            if not key or not smiles or key in ("Start", "End") or key in self._fragments:
+                raise ValueError(f"invalid or duplicate fragment key: {key!r}")
+            from rdkit import Chem
+            molecule = Chem.MolFromSmiles(smiles)
+            if molecule is None or len(Chem.GetMolFrags(molecule)) != 1:
+                raise ValueError(f"fragment {key}: invalid or disconnected SMILES")
+            dummies = [atom for atom in molecule.GetAtoms() if atom.GetAtomicNum() == 0]
+            if sorted(atom.GetIsotope() for atom in dummies) != [1, 2] or any(atom.GetDegree() != 1 for atom in dummies):
+                raise ValueError(f"fragment {key}: exactly one terminal [1*] and [2*] are required")
 
             family = str(row.get("family", "custom")).strip() or "custom"
             label = str(row.get("label", key)).strip() or key
@@ -286,16 +299,20 @@ class FragmentRegistry:
         """
         for source, raw_targets in custom_transitions.items():
             source_key = str(source).strip()
-            if source_key not in self._fragments:
-                continue
+            if source_key != "Start" and source_key not in self._fragments:
+                raise ValueError(f"unknown transition source: {source_key}")
+            if not isinstance(raw_targets, (list, tuple)):
+                raise ValueError(f"transition targets for {source_key} must be a list")
 
             targets = []
             for target in raw_targets:
                 target_key = str(target).strip()
                 if target_key == "End" or target_key in self._fragments:
-                    targets.append(target_key)
-            if targets:
-                self._transitions[source_key] = targets
+                    if target_key not in targets:
+                        targets.append(target_key)
+                else:
+                    raise ValueError(f"unknown transition target: {target_key}")
+            self._transitions[source_key] = targets
 
         if not custom_keys:
             return
@@ -361,77 +378,9 @@ def get_fragment_registry() -> FragmentRegistry:
     return DEFAULT_REGISTRY
 
 
-# 片段维护备注
-# 1. 这里的片段不是完整单体，而是已经带有两个连接端点的链段。
-# 2. [1*] 和 [2*] 只用于拼接定位，最终建模前会被真实端基替换。
-# 3. 如果新增片段只有一个连接点，MCTS 可以搜到，但 RDKit 建链会失败。
-# 4. 如果片段有三个以上连接点，本项目当前仍按线型聚合物处理，不会自动支化。
-# 5. 聚酰亚胺片段保留 A、A'、B、C，是为了兼容最早的搜索空间。
-# 6. A 和 A' 都属于酰亚胺刚性片段，热导启发式里按 rigid/imide 处理。
-# 7. B 是对苯撑桥，主要贡献芳香刚性和链段线性。
-# 8. C 是醚键片段，主要用于引入柔性连接。
-# 9. 聚氨酯片段按“已形成氨基甲酸酯键的链段”来写。
-# 10. 这样可以避开显式反应机理，只检查最终链段能否拼接。
-# 11. PU_MDI 表示芳香硬段，通常会提高链段刚性。
-# 12. PU_HDI 表示脂肪族硬段，刚性弱于 PU_MDI。
-# 13. PU_BDO 表示短二醇软段，可增加构象自由度。
-# 14. PU_PEG 表示聚醚软段，柔性更强，也带来更多杂原子。
-# 15. 酚醛树脂片段按酚环和亚甲基桥来拆分。
-# 16. PF_PHENOL 是普通酚环片段。
-# 17. PF_RESOL 带羟甲基侧基，用于表示 resol 型结构倾向。
-# 18. PF_METHYLENE 是酚醛网络中常见的桥接单元。
-# 19. 当前 Packmol 和 LAMMPS data 写出仍按线型分子处理。
-# 20. 对真实热固性酚醛网络，后续可以单独增加交联建模模块。
-# 21. active_families 控制内置片段是否进入 Start 的候选集。
-# 22. 如果只研究聚氨酯，可以把 active_families 写成 polyurethane。
-# 23. 如果研究多体系对比，可以保留多个 family 并让 MCTS 混合探索。
-# 24. 混合探索能扩大空间，但化学可解释性需要人工复核。
-# 25. custom_fragments.json 适合放课题中的候选片段。
-# 26. 自定义片段 key 不要和内置 key 重名，除非明确要覆盖内置定义。
-# 27. 自定义片段 smiles 必须能被 RDKit 的 Chem.MolFromSmiles 解析。
-# 28. 自定义片段最好先单独做一次重复单元拼接检查。
-# 29. 如果小规模拼接失败，通常是虚拟端点或价态写法有问题。
-# 30. 如果 UFF 优化失败但 PDB 已生成，可以先检查初始三维构象。
-# 31. custom_transitions 不写时，自定义片段默认互相可接并可 End。
-# 32. 正式筛选建议写 custom_transitions，避免 MCTS 搜索无意义组合。
-# 33. transitions 里的 End 表示该路径可以终止。
-# 34. 达到 max_steps 后状态机会强制补上 End，结束当前重复单元。
-# 35. max_steps 只计算真实片段，不计算 Start 和 End，也不是聚合度。
-# 36. 聚合度由重复单元轮廓长度和目标链长自动计算。
-# 37. 不同重复单元长度不同，因此自动得到的实际 DP 也可以不同。
-# 38. build_results.csv 会记录实际 DP 和估算链长，便于人工复核。
-# 39. 低热导目标使用 reward=1/(1+k/reward_scale) 的方向。
-# 40. 因此 MCTS 分数越高，代表估计或反馈的热导率越低。
-# 41. 启发式奖励只负责快速导向，不能替代最终 LAMMPS 结果。
-# 42. thermal feedback 模式会把 LAMMPS 后处理结果反馈到节点。
-# 43. feedback_max_evaluations 用于限制昂贵模拟次数。
-# 44. 如果 LAMMPS 失败且允许 fallback，会退回启发式评分。
-# 45. 如果不允许 fallback，失败序列会得到 failure_reward。
-# 46. 片段 roles 会影响启发式热导估计。
-# 47. rigid/aromatic 通常增加估计热导。
-# 48. flexible/ether 通常降低估计热导。
-# 49. imide/urethane/phenolic 只作为化学类别和轻微修正项使用。
-# 50. 这些权重只是筛选前的粗略假设，后续可由数据拟合更新。
-# 51. CSV 输出会同时记录 sequence_text 和 family_text。
-# 52. sequence_text 便于人工直接看片段顺序。
-# 53. family_text 便于区分 PI、PU、PF 或 custom 来源。
-# 54. 如果要申请软著，建议保留这些注释和配置示例。
-# 55. 注释反映的是工程约束、数据格式和使用边界。
-# 56. 它们不是装饰，后续调试自定义片段时会经常用到。
-# 57. 新增片段后优先跑语法检查，再跑一个很小的 MCTS 搜索。
-# 58. 小搜索通过后，再放大 top_k、DP 和 Packmol 分子数。
-# 59. 如果 Packmol 长时间不收敛，先减小 molecule_count 或增大 box_size。
-# 60. 如果 LAMMPS 报键跨越盒子，先检查 PDB 初始构象和盒子尺寸。
-# 61. 如果需要真实热导率，后续还要补可靠力场和充分弛豫。
-# 62. 当前快速脚本主要用于流程验证和低热导候选的第一轮筛选。
-# 63. 未参数化的 data 会被热导输入生成器拒绝，不能进入 thermal reward。
-# 64. 自定义片段的命名建议使用体系前缀，如 PU_、PF_、CUSTOM_。
-# 65. 命名清楚以后，结果表里的序列更容易追溯。
-# 66. 片段库扩展时不要直接删除旧 key，历史输出可能还会引用它们。
-# 67. 如果必须重命名，可以在 README 或变更记录里写清楚映射关系。
-# 68. 这个模块只保存化学空间，不负责三维构象和模拟参数。
-# 69. 三维构象由 Poly_Build 和 RDKit 负责。
-# 70. 初始体系装盒由 packmol_runner 负责。
-# 71. LAMMPS data 写出由 lammps_data_writer 负责。
-# 72. 热导率输入脚本由 thermal_conductivity_writer 负责。
-# 73. 这种分层能让片段库独立演化，减少互相牵连。
+# 片段按线型重复单元处理，每个片段必须保留 [1*]、[2*] 两个端点。
+# 新片段先用 RDKit 单独检查 SMILES 和一次拼接，再放进搜索图。
+# PU 和 PF 目前也是线型近似；交联结构留给后续单独处理。
+# roles 只影响启发式奖励，使用 LAMMPS 反馈时不读取这些标签。
+# 历史结果会保存片段 key，已有 key 不轻易改名。
+# 片段较多时应明确写 transitions，避免搜索到明显无意义的组合。

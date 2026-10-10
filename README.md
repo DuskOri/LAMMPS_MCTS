@@ -4,6 +4,22 @@ LAMMPS_MCTS 是一个面向低热导聚合物筛选的自动化建模与模拟�
 
 当前目标是寻找热导率较低的聚合物结构。MCTS 中的奖励值越高，表示对应候选的估计热导率或反馈热导率越低。
 
+## 2026-10-10 运行与结果变更
+
+新任务将表格保存到 `output.directory/runs/<run_id>/`，评价文件保存到 `mcts.feedback_output_dir/runs/<run_id>/eval_NNNN/`。默认根目录分别为 `outputs` 与 `data`。`outputs/latest_run.json` 指向最近任务；旧根目录文件保留作为历史数据，下面旧路径示例在新任务中需加上 `runs/<run_id>/`。每个已评分候选保存 `search_checkpoint.json`，每个评价立即保存 CSV、`metadata.json` 及反馈 `records.json`。这些文件便于恢复已完成结果，当前没有自动续跑搜索树的功能。
+
+每个任务保存实际配置和片段图快照，每个评价保存序列、分阶段状态、结构/输入/采样哈希及产物清单。关闭 `feedback_run_lammps` 只准备输入，不能将历史采样绑定到新候选。
+
+当前测量沿用固定端、冷热源和中央薄层的直接 NEMD。pair 与 PPPM 的原子应力采用普通分配，键合多体项采用 centroid 分配；逐原子热流按当前位置的 `rmask(flux)` 求和，再除以薄层体积。`real` 单位的应力转换因子为 `68568.415`。选择其他力场时，须确认其原子能量、应力和 centroid 支持情况，无法支持的样式会使 LAMMPS 明确失败。
+
+冷热浴使用 `tally yes` 输出 `nemd_bath_energy.dat`。Langevin 标量采用热库能量符号，热浴供热为负、冷浴吸热为正。后处理在相同末段时间范围检查完整块的热流标准误、温度梯度、热流方向、冷热浴功率平衡和微观热流与热浴功率/横截面积的一致性。固定端几何按一条主传热通路处理；若改变为双通路几何，需重新定义面积/通路归一化。
+
+新增配置：`system.packmol_timeout_seconds` 默认 600 秒；`nemd_max_relative_error` 默认 0.20、`nemd_energy_balance_tolerance` 默认 0.20、`nemd_flux_agreement_tolerance` 默认 0.30（后三项位于 `thermal_conductivity`）。`relative_error` 是热流块均值标准误相对均值的比例，不是包含梯度、有限尺寸和力场误差的总不确定度。默认不满足密度/热流收敛或质量检查的评价失败，不作为有效热导结果。`production_steps` 必须满足最小块数预算，实际生产总步数向下取完整块，绝不抬高上限。
+
+已有热导率由旧参数和旧测量定义产生，不能仅用新后处理修复，应重建体系并重新计算。当前 `uff_screening` 仍是筛选模型：谐和键角近似、Gasteiger 电荷、amber 特殊键缩放及缺少完整 UFF improper 等限制未在本次扩展为正式验证力场。平台保留可配置力场样式与 include 入口，本次未新增其他力场后端。
+
+前端须由 `python web_server.py` 同源访问，不能直接打开 HTML 后跨域控制服务。修改 API 使用会话令牌，服务仅提供 `frontend/` 静态资源；可以设置 `LAMMPS_MCTS_PORT` 使用其他本机端口。普通保存相同档位保留手工配置，切换档位才套用预设；“已保存的计算参数”显示当前实际参数。配置保存为 JSON 语法，仍是合法 YAML；手工编写复杂 YAML 需要安装 `requirements.txt` 中的 PyYAML。
+
 ## 功能概述
 
 项目当前支持以下功能：
@@ -48,6 +64,7 @@ LAMMPS_MCTS/
 │   └── thermal_feedback.py
 ├── md_engine/
 │   ├── lammps_data_writer.py
+│   ├── process_control.py
 │   ├── lammps_runner.py
 │   └── thermal_conductivity_writer.py
 ├── post_process/
@@ -60,6 +77,11 @@ LAMMPS_MCTS/
 │   ├── styles.css
 │   ├── app.js
 │   └── assets/
+├── docs/attachments/
+├── data/                  # ignored runtime evaluation data
+├── outputs/               # ignored generated results
+├── run_storage.py
+├── tests/
 └── web_server.py
 ```
 
@@ -163,7 +185,8 @@ http://localhost:8010/frontend/
 - 运行期间可点击顶部“终止”按钮，停止当前 LAMMPS 子进程并取消剩余 MCTS 轮次。
 - NEMD 提供“快速筛选”和“标准复核”两档；快速档用于 MCTS，标准档用于最终候选复算。
 - 可开关密度平台平衡，并设置预压缩密度、平台判断阈值和最大判断窗口数。
-- 前端可单独设置 LAMMPS 超时秒数；`0` 表示不限制运行时间。
+- 前端分别提供压缩和 NEMD 参数区，可独立设置两个阶段的超时；`0` 表示不限制运行时间。
+- NEMD 生产步数上限和热流收敛阈值可以直接在搜索设置中修改。
 - MCTS 候选序列和低热导数据库查看。
 - 热导率结果表。
 - 候选序列选择性清除。
@@ -326,13 +349,13 @@ mcts:
 搜索结束后，程序只会对最终 top_k 候选导出结构和 LAMMPS 输入文件，例如：
 
 ```text
-outputs/lammps/candidate_001_direct_nemd.in
+outputs/runs/<run_id>/lammps/candidate_001_direct_nemd.in
 ```
 
 需要人工复查时，可以手动运行某个导出的候选：
 
 ```powershell
-lmp -in outputs/lammps/candidate_001_direct_nemd.in
+lmp -in outputs/runs/<run_id>/lammps/candidate_001_direct_nemd.in
 ```
 
 默认直接 NEMD 脚本保留分子间相互作用。它沿 x 方向设置固定端、热源区、中央传热区、冷源区和另一固定端；冷热 Langevin fix 挂在 `all` 组上，并通过 `fix_modify ... temp/region` 使用对应区域温度。输入 data 必须包含真实的 Pair、Bond、Angle、Dihedral 等力场系数；缺少所需系数时程序会停止该次热导评价并记录原因。
@@ -345,21 +368,24 @@ NEMD 采样前会先建立密度平台。程序在高温下熔融体系，用 `f
 
 常用结果文件如下：
 
-- `outputs/candidates.csv`：MCTS 搜索到的候选片段序列。
-- `outputs/build_results.csv`：RDKit 建链结果和 PDB 路径。
-- `outputs/system_results.csv`：Packmol 初始体系和 LAMMPS data 结果。
-- `outputs/thermal_inputs.csv`：最终 top_k 候选的 LAMMPS 输入脚本路径。
-- `outputs/feedback_records.csv`：MCTS 搜索阶段的热导率反馈记录。
-- `outputs/low_k_database.csv`：按搜索阶段 reward 排序的低热导候选数据库。
-- `outputs/mcts_feedback/eval_NNNN/lammps/direct_nemd_density.dat`：本轮高温 NPT 的密度窗口均值。
-- `outputs/mcts_feedback/eval_NNNN/lammps/direct_nemd_temperature_profile.dat`：x 方向分层温度。
-- `outputs/mcts_feedback/eval_NNNN/lammps/direct_nemd_heat_flux.dat`：中央测量区的 x 方向热流密度。
+- `outputs/runs/<run_id>/candidates.csv`：MCTS 搜索到的候选片段序列。
+- `outputs/runs/<run_id>/build_results.csv`：RDKit 建链结果和 PDB 路径。
+- `outputs/runs/<run_id>/system_results.csv`：Packmol 初始体系和 LAMMPS data 结果。
+- `outputs/runs/<run_id>/thermal_inputs.csv`：最终 top_k 候选的 LAMMPS 输入脚本路径。
+- `outputs/runs/<run_id>/feedback_records.csv`：MCTS 搜索阶段的热导率反馈记录。
+- `outputs/runs/<run_id>/low_k_database.csv`：按搜索阶段 reward 排序的低热导候选数据库。
+- `data/runs/<run_id>/eval_NNNN/initial.data`：Packmol 装箱并参数化后的初始体系。
+- `data/runs/<run_id>/eval_NNNN/compression.in` 和 `compression.log`：熔融、密度平台压缩与冷却平衡输入和日志。
+- `data/runs/<run_id>/eval_NNNN/compressed.data`：压缩并完成室温平衡后的体系。
+- `data/runs/<run_id>/eval_NNNN/nemd.in` 和 `nemd.log`：自适应直接 NEMD 输入和完整日志。
+- `data/runs/<run_id>/eval_NNNN/nemd_temperature_profile.dat`：x 方向分层温度。
+- `data/runs/<run_id>/eval_NNNN/nemd_heat_flux.dat`：中央测量区的 x 方向热流密度。
 
-如果只关心最终低热导候选，优先查看 `outputs/low_k_database.csv`。如果要排查流程问题，则按上述文件顺序逐步检查。
+如果只关心最终低热导候选，优先查看最新任务目录中的 `low_k_database.csv`。`outputs/latest_run.json` 指向最新任务；如果要排查流程问题，则按上述文件顺序逐步检查。
 
-LAMMPS 运行时会把阶段命令、thermo 数据、警告和错误实时输出到启动程序的终端。每次 MCTS 热导评价的完整日志保存在 `outputs/mcts_feedback/eval_NNNN/lammps/direct_nemd.log`；LAMMPS 自己生成的通用 `log.lammps` 位于启动命令时的工作目录，通常是项目根目录。排错时优先查看候选目录中的 `direct_nemd.log`，它不会被下一候选覆盖。
+运行时，启动 `web_server.py` 的终端会逐行显示 MCTS、RDKit 建链、Packmol、LAMMPS 和结果保存反馈，其中 LAMMPS 标准输出不会省略。前端命令行继续显示便于观察的关键进度，并在下方实时绘制压缩密度和 NEMD 热流曲线。每次 MCTS 热导评价的压缩日志和 NEMD 日志分别保存在 `data/eval_NNNN/compression.log` 与 `data/eval_NNNN/nemd.log`，不同循环不会相互覆盖。
 
-前端支持清除候选序列。清除操作只重写对应 CSV 表格，不删除 `outputs/pdb/`、`outputs/systems/` 或 `outputs/lammps/` 中已经生成的结构和输入文件。需要彻底清理结构文件时，建议先手动备份再处理。
+前端支持清除候选序列。清除操作只重写当前任务对应的 CSV 表格，不删除已经生成的结构和输入文件。需要彻底清理结构文件时，建议先手动备份再处理。
 
 ### 常见问题
 
@@ -606,7 +632,7 @@ mcts:
 
 快速热导率脚本先执行密度平衡，再进入直接 NEMD。默认过程为高温升温与熔融、疏松盒子预压缩、高温常压 NPT 密度平台检测、降温 NPT、目标温度 NPT/NVT，然后按照参考 `in.pur.lmp` 在 x 方向建立固定端、`450 K` 热源区、中央传热区和 `150 K` 冷源区。主体使用 NVE 积分，先运行稳态阶段，再同时输出中央区 `Jx` 和 `0.5 A` 分层温度。后处理拟合中间 60% 区域的温度梯度，并按 `kappa = |Jx| / |dT/dx|` 换算为 `W/(m K)`。
 
-快速档默认使用 `100000` 步稳态和 `100000` 步生产采样，要求温度梯度拟合 `R2 >= 0.70`；标准档对应参考脚本使用 `500000 + 500000` 步，并要求 `R2 >= 0.85`。两档都要求拟合区温差至少 `5 K`，否则本轮标记失败，不向 MCTS 回传伪热导率。
+快速档默认使用 `20000` 步稳态，标准档使用 `50000` 步稳态。生产阶段不再固定跑满：快速档每 `10000` 步形成一个热流窗口，标准档每 `25000` 步形成一个窗口；达到最少 `5` 个窗口后，程序比较最近三个窗口绝对热流均值的相对波动。快速档波动不超过 `15%`、标准档不超过 `8%` 时提前停止，否则继续到 `production_steps` 规定的上限。两档仍会检查温度梯度线性度和至少 `5 K` 的拟合区温差。
 
 热导流程参数位于 `thermal_conductivity` 段：
 
@@ -621,12 +647,28 @@ thermal_conductivity:
   density_plateau_tolerance: 0.05
   nemd_hot_temperature: 450.0
   nemd_cold_temperature: 150.0
-  nemd_steady_steps: 100000
+  nemd_steady_steps: 20000
   production_steps: 100000
+  nemd_production_block_steps: 10000
+  nemd_min_production_blocks: 5
+  nemd_heat_flux_tolerance: 0.15
   nemd_min_gradient_r2: 0.7
 ```
 
-`precompression_density` 只控制预压缩起点，而且不会让本来更致密的体系反向膨胀。`density_plateau_tolerance` 是三个连续窗口的相对波动阈值，不是目标密度。最终密度会写入 LAMMPS 日志，完整的窗口历史写入 `direct_nemd_density.dat`。
+`production_steps` 是最大生产步数，不再代表每轮一定执行的步数。`nemd_heat_flux_tolerance` 是最近三个生产窗口绝对热流均值的相对波动阈值；达到阈值会在 `nemd.log` 中输出 `Heat flux converged` 并提前写出结果。
+
+压缩和 NEMD 使用独立超时：
+
+```yaml
+lammps:
+  executable: lmp
+  compression_timeout_seconds: 3600
+  nemd_timeout_seconds: 7200
+```
+
+旧配置中的 `timeout_seconds` 仍作为兼容兜底。只要写入两个新字段，压缩和 NEMD 就分别按自己的时间上限运行。
+
+`precompression_density` 只控制预压缩起点，而且不会让本来更致密的体系反向膨胀。`density_plateau_tolerance` 是三个连续窗口的相对波动阈值，不是目标密度。最终密度会写入 LAMMPS 日志，完整的窗口历史写入 `data/eval_NNNN/compression_density.dat`。
 
 默认的 `system.force_field: uff_screening` 会从 RDKit MOL 文件读取键级，计算 Gasteiger 电荷，并写入 UFF 的非键、键、键角和二面角参数。Packmol 只负责多链装箱，随后程序把这些参数和装箱坐标组合成可直接读取的 LAMMPS data。若选择 `topology_only`，或 data 缺少必要的 `Pair Coeffs`、`Bond Coeffs` 等段，热导评价会明确停止，不会生成零作用力的伪结果。
 
@@ -636,22 +678,22 @@ UFF 路径用于快速筛选和程序联调，不等同于论文采用的 GAFF �
 
 ## 输出文件
 
-默认输出目录：
+默认输出根目录：
 
 ```text
-outputs/
+outputs/runs/<run_id>/
 ```
 
 主要文件：
 
 ```text
-outputs/candidates.csv
-outputs/build_results.csv
-outputs/system_results.csv
-outputs/thermal_inputs.csv
-outputs/low_k_database.csv
-outputs/feedback_records.csv
-outputs/candidate_notes.txt
+outputs/runs/<run_id>/candidates.csv
+outputs/runs/<run_id>/build_results.csv
+outputs/runs/<run_id>/system_results.csv
+outputs/runs/<run_id>/thermal_inputs.csv
+outputs/runs/<run_id>/low_k_database.csv
+outputs/runs/<run_id>/feedback_records.csv
+outputs/runs/<run_id>/candidate_notes.txt
 ```
 
 说明：

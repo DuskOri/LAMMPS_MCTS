@@ -1,15 +1,15 @@
 mcts:
-  iterations: 2
+  iterations: 1
   max_steps: 3
   start_fragment: Start
-  top_k: 3
+  top_k: 1
   exploration_weight: 1.41421356237
   rollout_limit: 32
   random_seed: 7
   feedback_mode: thermal
   feedback_every_iteration: true
-  feedback_max_evaluations: 2
-  feedback_output_dir: outputs/mcts_feedback
+  feedback_max_evaluations: 1
+  feedback_output_dir: data
   feedback_run_lammps: true
   feedback_reward_scale: 0.2
   feedback_fallback_to_heuristic: false
@@ -40,14 +40,15 @@ polymer:
 
 system:
   prepare_initial_system: true
-  molecule_count: 4
-  box_size: 45.0
+  molecule_count: 10
+  box_size: 60.0
   tolerance: 2.0
   packmol_executable: packmol
   force_field: uff_screening
+  packmol_timeout_seconds: 600
 
 thermal_conductivity:
-  profile: quick
+  profile: standard
   write_fast_input: true
   temperature: 300.0
   pressure: 1.0
@@ -57,28 +58,34 @@ thermal_conductivity:
   cutoff: 12.0
   density_equilibration: true
   melt_temperature: 550.0
-  melt_heating_steps: 2000
-  melt_hold_steps: 2000
+  melt_heating_steps: 10000
+  melt_hold_steps: 20000
   precompression_density: 0.7
-  precompression_steps: 5000
-  density_block_steps: 2000
+  precompression_steps: 50000
+  density_block_steps: 10000
   density_sample_every: 100
-  density_max_blocks: 10
-  density_plateau_tolerance: 0.05
-  cooling_steps: 3000
-  nvt_steps: 2000
-  npt_steps: 8000
-  production_steps: 100000
+  density_max_blocks: 20
+  density_plateau_tolerance: 0.02
+  cooling_steps: 50000
+  nvt_steps: 10000
+  npt_steps: 50000
+  production_steps: 1000000
   nemd_hot_temperature: 450.0
   nemd_cold_temperature: 150.0
   nemd_thermostat_damp: 1.0
-  nemd_steady_steps: 100000
+  nemd_steady_steps: 50000
+  nemd_production_block_steps: 25000
+  nemd_min_production_blocks: 5
+  nemd_heat_flux_tolerance: 0.3
   nemd_profile_nevery: 10
   nemd_profile_repeat: 100
-  nemd_min_gradient_r2: 0.7
+  nemd_min_gradient_r2: 0.85
   nemd_min_temperature_span: 5.0
-  thermo_every: 500
-  dump_every: 5000
+  nemd_max_relative_error: 0.20
+  nemd_energy_balance_tolerance: 0.20
+  nemd_flux_agreement_tolerance: 0.30
+  thermo_every: 1000
+  dump_every: 10000
   random_seed: 87287
   pair_style: lj/cut/coul/long 12.0
   bond_style: harmonic
@@ -93,7 +100,9 @@ thermal_conductivity:
 
 lammps:
   executable: lmp
-  timeout_seconds: 1800
+  timeout_seconds: 7200
+  compression_timeout_seconds: 3600
+  nemd_timeout_seconds: 0
 
 output:
   directory: outputs

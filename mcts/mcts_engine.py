@@ -1,6 +1,7 @@
 """聚合物片段序列的蒙特卡洛树搜索主流程。"""
 
 import random
+from md_engine.process_control import raise_if_cancelled
 
 try:
     from .node import MCTSNode
@@ -77,6 +78,7 @@ class MCTSEngine:
 
         self.total_iterations = int(iterations)
         for iteration in range(1, self.total_iterations + 1):
+            raise_if_cancelled()
             self.current_iteration = iteration
             self._notify_iteration()
             node = self._select(root)
@@ -105,6 +107,8 @@ class MCTSEngine:
             if not actions:
                 break
             rollout_state = rollout_state.take_action(random.choice(actions))
+        if rollout_state.current_fragment != "End":
+            return -1.0
         return self._evaluate_sequence(rollout_state.to_mcts_output())
 
     def _evaluate_sequence(self, sequence):

@@ -7,8 +7,11 @@ from .lammps_data_writer import (
     write_lammps_data_from_template,
 )
 from .thermal_conductivity_writer import (
+    LammpsStageInputResult,
     ThermalConductivityInputResult,
     validate_force_field_data,
+    write_adaptive_nemd_input,
+    write_compression_input,
     write_direct_nemd_input,
 )
 from .lammps_runner import LammpsRunResult, run_lammps_input, terminate_active_lammps
@@ -17,6 +20,7 @@ from .uff_data_writer import write_uff_lammps_data_from_template
 __all__ = [
     "PDBTopology",
     "LammpsRunResult",
+    "LammpsStageInputResult",
     "read_pdb_topology",
     "run_lammps_input",
     "terminate_active_lammps",
@@ -24,6 +28,8 @@ __all__ = [
     "validate_force_field_data",
     "write_lammps_data",
     "write_lammps_data_from_template",
+    "write_adaptive_nemd_input",
+    "write_compression_input",
     "write_direct_nemd_input",
     "write_uff_lammps_data_from_template",
 ]
